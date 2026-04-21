@@ -78,15 +78,3 @@ This thesis is broken if one or more occur:
 
 ## One-sentence summary
 NVIDIA is a platform company whose software-driven lock-in allows it to extract outsized value from AI compute for longer than the market expects; the risk is valuation, not relevance.
-
-## Decision Log
-
-### [After Full-Year Results Period]
-
-[Document key business developments affecting NVIDIA's position. Example topics:
-- CUDA ecosystem adoption and switching cost durability
-- Competition and pricing power trends
-- AI capex demand validation
-- Customer concentration and diversification
-- Whether thesis pillars strengthened, weakened, or remained stable
-- Portfolio decision and rationale]

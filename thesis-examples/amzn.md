@@ -84,13 +84,3 @@ Consider trimming or exiting if:
 ## One-sentence summary
 Amazon is a multi-platform compounder whose long-term value depends on AWS durability, operating leverage in logistics, and disciplined reinvestment rather than near-term earnings optimization.
 
-## Decision Log
-
-### [After Full-Year Results Period]
-
-[Document key business developments, validation of core thesis pillars, and portfolio decision. Example topics:
-- AWS growth and margin trends
-- E-commerce profitability progress
-- Capital expenditure efficiency
-- Regulatory developments
-- Whether the thesis remains intact or invalidation criteria were triggered]

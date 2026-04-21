@@ -63,12 +63,12 @@ At a high level, the workflow is:
 1. `main.py` scans all markdown files in [thesis](thesis).
 2. The ticker is derived from the thesis file name, so `amzn.md` maps to `AMZN`, `nvda.md` maps to `NVDA`, and so on.
 3. For every thesis, the script uses [sec_filings.py](sec_filings.py) to look up the company on SEC EDGAR and retrieve recent `10-K`, `10-Q`, and `8-K` filings.
-4. The script checks whether a filing has already been processed by searching the thesis markdown for a hidden accession marker in the Decision Log.
+4. The script writes and reads decision logs in same-named files under [log](log), for example `thesis/amzn.md` -> `log/amzn.md`.
 5. Only filings that do not already have a processed marker are treated as new filings.
 6. For each new filing, the script loads the corresponding review instructions from [instructions/10-k.md](instructions/10-k.md), [instructions/10-q.md](instructions/10-q.md), or [instructions/8-k.md](instructions/8-k.md).
 7. The filing text, the full current thesis, and the selected instruction file are sent to the OpenAI evaluation layer in [openai_evaluator.py](openai_evaluator.py).
-8. The OpenAI evaluator produces a short markdown review intended to be appended to the thesis Decision Log.
-9. The script appends a new Decision Log entry that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
+8. The OpenAI evaluator produces a short markdown review intended to be appended to the log file Decision Log.
+9. The script appends a new Decision Log entry to the log file that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
 10. A hidden processed marker is stored alongside the new entry so the same SEC filing will not be processed again in a future run.
 
 ### Core Components
@@ -79,7 +79,7 @@ At a high level, the workflow is:
 - Iterates through all thesis files.
 - Detects new filings.
 - Calls the evaluator.
-- Writes updated decision logs back to disk.
+- Writes updated decision logs to [log](log) files.
 - Prints progress and summary information during the run.
 
 `sec_filings.py`
@@ -93,7 +93,7 @@ At a high level, the workflow is:
 
 - Wraps the OpenAI API call.
 - Builds the evaluation prompt from three inputs: the thesis markdown, the SEC filing text, and the form-specific instruction file.
-- Returns markdown suitable for inclusion in the thesis Decision Log.
+- Returns markdown suitable for inclusion in the log file Decision Log.
 
 `instructions/`
 
@@ -105,8 +105,15 @@ At a high level, the workflow is:
 `thesis/`
 
 - Stores one markdown file per company thesis.
-- Each file contains the long-form thesis and a `## Decision Log` section.
-- New SEC-driven reviews are appended to the Decision Log over time.
+- Files are the source investment-thesis documents used as evaluation input.
+
+`log/`
+
+- Stores one markdown file per company for generated decision logs.
+- Each log file is named the same as the thesis file (for example `amzn.md`).
+- If a log file does not exist, it is created automatically with:
+	- the top-level company header from the thesis file (first `# ...` line)
+	- a `## Decision Log` header
 
 ### How Reprocessing Is Prevented
 
@@ -116,13 +123,13 @@ Every generated Decision Log entry includes a hidden marker in this format:
 <!-- processed-sec-filing:0000000000-00-000000 -->
 ```
 
-That accession number is unique to the SEC filing. On the next run, the script scans the thesis file for that marker. If the marker already exists, the filing is skipped.
+That accession number is unique to the SEC filing. On the next run, the script scans the corresponding log file for that marker. If the marker already exists, the filing is skipped.
 
 This makes the process idempotent for previously handled filings and ensures the script only evaluates newly discovered filings.
 
-### What Gets Written To The Thesis
+### What Gets Written To The Log File
 
-For each new SEC filing, the script appends a new Decision Log block with:
+For each new SEC filing, the script appends a new Decision Log block to the `log/<ticker>.md` file with:
 
 - the filing form, date, and accession number
 - the filing URL on sec.gov
@@ -150,6 +157,25 @@ The script depends on both of these environment variables being configured befor
 
 Without `OPENAI_API_KEY`, the evaluator cannot produce decision log content. Without `SEC_USER_AGENT`, the SEC client will refuse to start.
 
+## Create Your Own Thesis Files
+
+You can create your own theses by using templates in [thesis-examples](thesis-examples).
+
+Recommended starting points:
+
+- [thesis-examples/general-thesis.md](thesis-examples/general-thesis.md): generic template
+- [thesis-examples/amzn.md](thesis-examples/amzn.md): concrete company example
+- [thesis-examples/nvda.md](thesis-examples/nvda.md): concrete company example
+
+Steps for a new thesis:
+
+1. Copy [thesis-examples/general-thesis.md](thesis-examples/general-thesis.md) to a new file in [thesis](thesis).
+2. Name the file as the ticker in lowercase, for example `msft.md`, `goog.md`, or `wmt.md`.
+3. Fill out the thesis sections (position, core thesis, risks, invalidation criteria, and so on).
+4. Keep the first line as a top-level company header, for example `# Microsoft (MSFT)`, because that header is used when initializing the corresponding log file.
+5. Run the script with `python main.py`.
+6. Review generated entries in `log/<ticker>.md`.
+
 ## Run the Application
 
 ```bash
@@ -161,4 +187,7 @@ python main.py --filings-limit 10
 
 # Override the OpenAI model for this run
 python main.py --openai-model gpt-4.1-mini
+
+# Write logs to a custom folder
+python main.py --log-dir my-logs
 ```

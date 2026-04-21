@@ -12,6 +12,7 @@ from sec_filings import SUPPORTED_FORMS, FilingRecord, SecEdgarError, SecFilings
 ROOT_DIR = Path(__file__).resolve().parent
 THESIS_DIR = ROOT_DIR / "thesis"
 INSTRUCTIONS_DIR = ROOT_DIR / "instructions"
+LOG_DIR = ROOT_DIR / "log"
 
 FORM_INSTRUCTION_FILES = {
     "10-K": "10-k.md",
@@ -51,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional override for OPENAI_MODEL.",
     )
+    parser.add_argument(
+        "--log-dir",
+        default=str(LOG_DIR),
+        help=f"Path to decision log markdown files. Default: {LOG_DIR}",
+    )
     return parser
 
 
@@ -58,6 +64,7 @@ def main() -> int:
     args = build_parser().parse_args()
     thesis_dir = Path(args.thesis_dir)
     instructions_dir = Path(args.instructions_dir)
+    log_dir = Path(args.log_dir)
 
     try:
         instruction_texts = _load_instruction_texts(instructions_dir)
@@ -74,8 +81,11 @@ def main() -> int:
 
     print("SEC thesis revalidation run started")
     print(f"- Thesis files: {len(thesis_files)}")
+    print(f"- Log directory: {log_dir}")
     print(f"- Forms: {', '.join(SUPPORTED_FORMS)}")
     print()
+
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     processed_count = 0
     skipped_count = 0
@@ -86,6 +96,8 @@ def main() -> int:
         try:
             thesis_text = thesis_path.read_text(encoding="utf-8")
             ticker = _ticker_from_thesis_path(thesis_path)
+            log_path = log_dir / thesis_path.name
+            log_text = _load_or_initialize_log(log_path, thesis_text)
 
             filings = sec_client.list_filings(
                 ticker,
@@ -98,8 +110,15 @@ def main() -> int:
             new_filings = [
                 filing
                 for filing in filings
-                if not _already_processed(thesis_text, filing.accession_number)
+                if not _already_processed(log_text, filing.accession_number)
             ]
+            new_filings.sort(
+                key=lambda filing: (
+                    filing.filing_date,
+                    filing.acceptance_datetime or "",
+                    filing.accession_number,
+                )
+            )
             if not new_filings:
                 print("- No new filings to process")
                 print()
@@ -137,8 +156,8 @@ def main() -> int:
                     )
                 )
 
-                thesis_text = _append_decision_log_entry(thesis_text, filing, evaluation)
-                thesis_path.write_text(thesis_text, encoding="utf-8")
+                log_text = _append_decision_log_entry(log_text, filing, evaluation)
+                log_path.write_text(log_text, encoding="utf-8")
 
                 print("    Result summary:")
                 first_line = _first_content_line(evaluation)
@@ -177,6 +196,25 @@ def _ticker_from_thesis_path(thesis_path: Path) -> str:
     if not ticker:
         raise ValueError(f"Could not derive ticker from thesis file name: {thesis_path}")
     return ticker
+
+
+def _load_or_initialize_log(log_path: Path, thesis_text: str) -> str:
+    if log_path.exists():
+        return log_path.read_text(encoding="utf-8")
+
+    main_header = _extract_main_header(thesis_text)
+    log_text = f"{main_header}\n\n{DECISION_LOG_HEADER}\n"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(log_text, encoding="utf-8")
+    return log_text
+
+
+def _extract_main_header(thesis_text: str) -> str:
+    for line in thesis_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped
+    raise ValueError("Could not find a top-level company header in thesis file.")
 
 
 def _already_processed(thesis_text: str, accession_number: str) -> bool:

@@ -69,19 +69,3 @@ Define clear conditions for reducing or exiting.
 
 ## One-sentence summary
 Summarize the full thesis in one sentence.
-
-## Decision Log
-
-Use this section to document thesis reviews, major company developments, or portfolio decisions.
-
-### [Event or Period, e.g. "After Full-Year 2025 Results" or "After Company Announcement"]
-
-[Write a concise summary of:
-- Key developments affecting the thesis
-- Whether invalidation criteria were triggered
-- How assumptions held up
-- Portfolio decision (Maintain, Reduce, Exit, Add)]
-
-### [Next Event or Review Period]
-
-[Continue documenting thesis validation and decisions over time]
