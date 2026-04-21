@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -86,7 +85,7 @@ def main() -> int:
         print(f"Working on thesis: {thesis_path.name}")
         try:
             thesis_text = thesis_path.read_text(encoding="utf-8")
-            ticker = _extract_ticker(thesis_text, thesis_path)
+            ticker = _ticker_from_thesis_path(thesis_path)
 
             filings = sec_client.list_filings(
                 ticker,
@@ -173,16 +172,11 @@ def _load_instruction_texts(instructions_dir: Path) -> dict[str, str]:
     return result
 
 
-def _extract_ticker(thesis_text: str, thesis_path: Path) -> str:
-    for line in thesis_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        match = re.search(r"\(([A-Z][A-Z0-9\.-]{0,9})\)", stripped)
-        if match:
-            return match.group(1)
-        break
-    raise ValueError(f"Could not extract ticker from thesis header: {thesis_path}")
+def _ticker_from_thesis_path(thesis_path: Path) -> str:
+    ticker = thesis_path.stem.strip().upper()
+    if not ticker:
+        raise ValueError(f"Could not derive ticker from thesis file name: {thesis_path}")
+    return ticker
 
 
 def _already_processed(thesis_text: str, accession_number: str) -> bool:
