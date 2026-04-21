@@ -8,6 +8,7 @@
 - [Approx. portfolio weight]
 
 ## What NVIDIA is
+
 NVIDIA is a full stack accelerated computing platform, combining:
 
 - Leading AI compute hardware (GPUs, systems, networking)
@@ -17,6 +18,7 @@ NVIDIA is a full stack accelerated computing platform, combining:
 It is not just a chip company; it is a platform company.
 
 ## Core thesis (why it should outperform)
+
 NVIDIA can capture disproportionate and durable economic value from AI and accelerated computing because:
 
 - CUDA and NVIDIA's software stack create high switching costs
@@ -27,6 +29,7 @@ NVIDIA can capture disproportionate and durable economic value from AI and accel
 The market can underestimate how long NVIDIA can sustain pricing power and margins.
 
 ## Lock-in mechanism (key insight)
+
 Customer lock-in is driven by:
 
 - Years of CUDA-optimized code
@@ -58,6 +61,7 @@ This resembles enterprise software lock-in, not commodity hardware competition.
 - Margins normalize lower but remain structurally high
 
 ## Invalidation criteria (sell or reassess if true)
+
 This thesis is broken if one or more occur:
 
 - Major AI frameworks become truly hardware-agnostic in production
@@ -77,4 +81,5 @@ This thesis is broken if one or more occur:
 - Position sizing should reflect concentration risk
 
 ## One-sentence summary
+
 NVIDIA is a platform company whose software-driven lock-in allows it to extract outsized value from AI compute for longer than the market expects; the risk is valuation, not relevance.

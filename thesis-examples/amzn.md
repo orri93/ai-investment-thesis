@@ -8,6 +8,7 @@
 - [Approx. portfolio weight]
 
 ## What Amazon is
+
 Amazon is a global technology and commerce platform company operating across:
 
 - E-commerce and third-party marketplace services
@@ -18,6 +19,7 @@ Amazon is a global technology and commerce platform company operating across:
 Amazon combines consumer-facing scale businesses with high-margin infrastructure and platform services, most notably AWS.
 
 ## Core investment thesis
+
 Amazon can compound shareholder value over long periods because it:
 
 - Operates multiple businesses with strong scale advantages and network effects
@@ -27,6 +29,7 @@ Amazon can compound shareholder value over long periods because it:
 The thesis assumes Amazon balances reinvestment discipline with improving profitability over time.
 
 ## Why Amazon specifically (company-level edge)
+
 Amazon's durable advantages include:
 
 - Massive logistics and fulfillment network that is difficult to replicate
@@ -56,6 +59,7 @@ Amazon's strength comes from ecosystem breadth, not dependence on a single produ
 This is capital-allocation and margin-discipline risk, not existential risk.
 
 ## Invalidation criteria (explicit)
+
 This thesis is broken if one or more occur:
 
 - AWS loses structural profitability or relevance
@@ -75,6 +79,7 @@ This thesis is broken if one or more occur:
 - Diversifier across multiple secular growth drivers
 
 ## Exit / trim rules
+
 Consider trimming or exiting if:
 
 - AWS ceases to be a clear profit engine
@@ -82,5 +87,5 @@ Consider trimming or exiting if:
 - Valuation materially exceeds long-term growth and return potential
 
 ## One-sentence summary
-Amazon is a multi-platform compounder whose long-term value depends on AWS durability, operating leverage in logistics, and disciplined reinvestment rather than near-term earnings optimization.
 
+Amazon is a multi-platform compounder whose long-term value depends on AWS durability, operating leverage in logistics, and disciplined reinvestment rather than near-term earnings optimization.
