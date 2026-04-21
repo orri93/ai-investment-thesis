@@ -61,7 +61,7 @@ The system is a batch thesis revalidation pipeline driven by new SEC filings.
 At a high level, the workflow is:
 
 1. `main.py` scans all markdown files in [thesis](thesis).
-2. Each thesis file is expected to begin with a header that contains the company ticker, for example `# Amazon (AMZN)`.
+2. The ticker is derived from the thesis file name, so `amzn.md` maps to `AMZN`, `nvda.md` maps to `NVDA`, and so on.
 3. For every thesis, the script uses [sec_filings.py](sec_filings.py) to look up the company on SEC EDGAR and retrieve recent `10-K`, `10-Q`, and `8-K` filings.
 4. The script checks whether a filing has already been processed by searching the thesis markdown for a hidden accession marker in the Decision Log.
 5. Only filings that do not already have a processed marker are treated as new filings.
