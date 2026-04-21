@@ -1,5 +1,6 @@
-# ai-investment-thesis
-An Investment Thesis evaluation system that utilizes OpenAI API
+# AI Investment Thesis evaluation system
+
+An Investment Thesis evaluation system that utilizes OpenAI API based on SEC filings and other financial data. The system is designed to analyze and evaluate investment theses for publicly traded companies by leveraging natural language processing and machine learning techniques.
 
 ## Python Environment
 
@@ -11,6 +12,7 @@ Activate the Virtual Environment
 ```bash
 # Windows
 venv\Scripts\activate
+
 # Linux / MacOS
 source venv/bin/activate
 ```
@@ -33,16 +35,11 @@ set OPENAI_API_KEY=your_openai_api_key
 export OPENAI_API_KEY=your_openai_api_key
 ```
 
-## SEC Filings Module
+## Set Environment Variable for SEC Filing API
 
-The project now includes a small SEC EDGAR client in `sec_filings.py` that can:
+This project reads company filings directly from SEC EDGAR. The SEC requires automated clients to identify themselves with a descriptive `User-Agent` header that includes contact information. This is necessary because SEC services monitor automated access and may reject or throttle requests that do not identify the caller properly.
 
-- resolve a ticker to a SEC CIK
-- check whether 10-K, 10-Q, and 8-K filings are available
-- list recent filings for those forms
-- fetch or download the primary filing document from sec.gov
-
-SEC expects a descriptive `User-Agent` header with contact information. Set it before using the module:
+Set `SEC_USER_AGENT` before running the script:
 
 ```bash
 # PowerShell
@@ -55,33 +52,113 @@ set SEC_USER_AGENT=ai-investment-thesis/1.0 your-email@example.com
 export SEC_USER_AGENT="ai-investment-thesis/1.0 your-email@example.com"
 ```
 
-Example usage:
+Use a real email address or other valid contact detail in the value. The SEC client in [sec_filings.py](sec_filings.py) will fail at startup if this variable is missing.
 
-```python
-from sec_filings import SecFilingsClient
+## How The System Works
 
-client = SecFilingsClient()
+The system is a batch thesis revalidation pipeline driven by new SEC filings.
 
-if client.is_filing_available("NVDA", "10-K"):
-	latest_10k = client.find_filing("NVDA", form="10-K")
-	print(latest_10k.filing_date, latest_10k.primary_document_url)
+At a high level, the workflow is:
 
-document = client.fetch_filing("NVDA", form="10-Q")
-print(document.text[:500])
+1. `main.py` scans all markdown files in [thesis](thesis).
+2. Each thesis file is expected to begin with a header that contains the company ticker, for example `# Amazon (AMZN)`.
+3. For every thesis, the script uses [sec_filings.py](sec_filings.py) to look up the company on SEC EDGAR and retrieve recent `10-K`, `10-Q`, and `8-K` filings.
+4. The script checks whether a filing has already been processed by searching the thesis markdown for a hidden accession marker in the Decision Log.
+5. Only filings that do not already have a processed marker are treated as new filings.
+6. For each new filing, the script loads the corresponding review instructions from [instructions/10-k.md](instructions/10-k.md), [instructions/10-q.md](instructions/10-q.md), or [instructions/8-k.md](instructions/8-k.md).
+7. The filing text, the full current thesis, and the selected instruction file are sent to the OpenAI evaluation layer in [openai_evaluator.py](openai_evaluator.py).
+8. The OpenAI evaluator produces a short markdown review intended to be appended to the thesis Decision Log.
+9. The script appends a new Decision Log entry that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
+10. A hidden processed marker is stored alongside the new entry so the same SEC filing will not be processed again in a future run.
+
+### Core Components
+
+`main.py`
+
+- Orchestrates the end-to-end workflow.
+- Iterates through all thesis files.
+- Detects new filings.
+- Calls the evaluator.
+- Writes updated decision logs back to disk.
+- Prints progress and summary information during the run.
+
+`sec_filings.py`
+
+- Resolves tickers to SEC CIK values.
+- Lists available `10-K`, `10-Q`, and `8-K` filings.
+- Fetches the primary filing document from SEC EDGAR.
+- Enforces the requirement that `SEC_USER_AGENT` must be configured.
+
+`openai_evaluator.py`
+
+- Wraps the OpenAI API call.
+- Builds the evaluation prompt from three inputs: the thesis markdown, the SEC filing text, and the form-specific instruction file.
+- Returns markdown suitable for inclusion in the thesis Decision Log.
+
+`instructions/`
+
+- Contains the review framework for each filing type.
+- `10-k.md` is used for annual revalidation.
+- `10-q.md` is used for quarterly revalidation.
+- `8-k.md` is used for event-driven evaluation.
+
+`thesis/`
+
+- Stores one markdown file per company thesis.
+- Each file contains the long-form thesis and a `## Decision Log` section.
+- New SEC-driven reviews are appended to the Decision Log over time.
+
+### How Reprocessing Is Prevented
+
+Every generated Decision Log entry includes a hidden marker in this format:
+
+```markdown
+<!-- processed-sec-filing:0000000000-00-000000 -->
 ```
 
-To save a filing locally:
+That accession number is unique to the SEC filing. On the next run, the script scans the thesis file for that marker. If the marker already exists, the filing is skipped.
 
-```python
-client.download_filing("NVDA", "downloads/nvda-8k.html", form="8-K")
-```
+This makes the process idempotent for previously handled filings and ensures the script only evaluates newly discovered filings.
+
+### What Gets Written To The Thesis
+
+For each new SEC filing, the script appends a new Decision Log block with:
+
+- the filing form, date, and accession number
+- the filing URL on sec.gov
+- the processing date
+- the OpenAI-generated thesis evaluation
+
+This creates a durable audit trail showing which filing drove each new decision log entry.
+
+### Runtime Output
+
+When you run the script, it prints operational progress to the console, including:
+
+- which thesis file is currently being processed
+- how many relevant SEC filings were discovered
+- which filings are new
+- a short summary of the OpenAI result for each processed filing
+- final totals for processed filings, skipped theses, and failures
+
+### Requirements Summary
+
+The script depends on both of these environment variables being configured before execution:
+
+- `OPENAI_API_KEY` for the OpenAI API
+- `SEC_USER_AGENT` for SEC EDGAR access
+
+Without `OPENAI_API_KEY`, the evaluator cannot produce decision log content. Without `SEC_USER_AGENT`, the SEC client will refuse to start.
 
 ## Run the Application
 
 ```bash
-# Ensure SEC_USER_AGENT is set first
+# Ensure OPENAI_API_KEY and SEC_USER_AGENT are set first
 python main.py
 
-# Test a specific ticker and fetch a filing preview
-python main.py AMZN --form 10-Q --fetch
+# Limit the filing scan depth per thesis
+python main.py --filings-limit 10
+
+# Override the OpenAI model for this run
+python main.py --openai-model gpt-4.1-mini
 ```
