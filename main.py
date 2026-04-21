@@ -97,7 +97,7 @@ def main() -> int:
             thesis_text = thesis_path.read_text(encoding="utf-8")
             ticker = _ticker_from_thesis_path(thesis_path)
             log_path = log_dir / thesis_path.name
-            log_text = _load_or_initialize_log(log_path, thesis_text)
+            log_text = _load_or_initialize_log(log_path, ticker)
 
             filings = sec_client.list_filings(
                 ticker,
@@ -198,23 +198,15 @@ def _ticker_from_thesis_path(thesis_path: Path) -> str:
     return ticker
 
 
-def _load_or_initialize_log(log_path: Path, thesis_text: str) -> str:
+def _load_or_initialize_log(log_path: Path, ticker: str) -> str:
     if log_path.exists():
         return log_path.read_text(encoding="utf-8")
 
-    main_header = _extract_main_header(thesis_text)
-    log_text = f"{main_header}\n\n{DECISION_LOG_HEADER}\n"
+    # Initialize a new log from the ticker/file name, not thesis markdown headers.
+    log_text = f"# {ticker}\n\n{DECISION_LOG_HEADER}\n"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(log_text, encoding="utf-8")
     return log_text
-
-
-def _extract_main_header(thesis_text: str) -> str:
-    for line in thesis_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("# "):
-            return stripped
-    raise ValueError("Could not find a top-level company header in thesis file.")
 
 
 def _already_processed(thesis_text: str, accession_number: str) -> bool:

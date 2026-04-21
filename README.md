@@ -112,7 +112,7 @@ At a high level, the workflow is:
 - Stores one markdown file per company for generated decision logs.
 - Each log file is named the same as the thesis file (for example `amzn.md`).
 - If a log file does not exist, it is created automatically with:
-	- the top-level company header from the thesis file (first `# ...` line)
+	- a top-level header from the thesis ticker/file name (for example `# AMZN`)
 	- a `## Decision Log` header
 
 ### How Reprocessing Is Prevented
@@ -172,7 +172,7 @@ Steps for a new thesis:
 1. Copy [thesis-examples/general-thesis.md](thesis-examples/general-thesis.md) to a new file in [thesis](thesis).
 2. Name the file as the ticker in lowercase, for example `msft.md`, `goog.md`, or `wmt.md`.
 3. Fill out the thesis sections (position, core thesis, risks, invalidation criteria, and so on).
-4. Keep the first line as a top-level company header, for example `# Microsoft (MSFT)`, because that header is used when initializing the corresponding log file.
+4. A top-level company header is optional; log initialization uses the thesis file name as ticker.
 5. Run the script with `python main.py`.
 6. Review generated entries in `log/<ticker>.md`.
 
