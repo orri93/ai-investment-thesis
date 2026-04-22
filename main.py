@@ -21,7 +21,7 @@ FORM_INSTRUCTION_FILES = {
 }
 
 PROCESSED_MARKER_TEMPLATE = "<!-- processed-sec-filing:{accession} -->"
-DECISION_LOG_HEADER = "## Decision Log"
+EVALUATION_LOG_HEADER = "## Evaluation Log"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,7 +156,7 @@ def main() -> int:
                     )
                 )
 
-                log_text = _append_decision_log_entry(log_text, filing, evaluation)
+                log_text = _append_evaluation_log_entry(log_text, filing, evaluation)
                 log_path.write_text(log_text, encoding="utf-8")
 
                 print("    Result summary:")
@@ -203,25 +203,25 @@ def _load_or_initialize_log(log_path: Path, ticker: str) -> str:
         return log_path.read_text(encoding="utf-8")
 
     # Initialize a new log from the ticker/file name, not thesis markdown headers.
-    log_text = f"# {ticker}\n\n{DECISION_LOG_HEADER}\n"
+    log_text = f"# {ticker}\n\n{EVALUATION_LOG_HEADER}\n"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(log_text, encoding="utf-8")
     return log_text
 
 
-def _already_processed(thesis_text: str, accession_number: str) -> bool:
+def _already_processed(log_text: str, accession_number: str) -> bool:
     marker = PROCESSED_MARKER_TEMPLATE.format(accession=accession_number)
-    return marker in thesis_text
+    return marker in log_text
 
 
-def _append_decision_log_entry(
-    thesis_text: str,
+def _append_evaluation_log_entry(
+    log_text: str,
     filing: FilingRecord,
     evaluation_markdown: str,
 ) -> str:
     marker = PROCESSED_MARKER_TEMPLATE.format(accession=filing.accession_number)
-    if marker in thesis_text:
-        return thesis_text
+    if marker in log_text:
+        return log_text
 
     title = (
         f"### SEC Filing Review: {filing.form} ({filing.filing_date}) - "
@@ -235,10 +235,10 @@ def _append_decision_log_entry(
     )
     block = f"{title}\n{metadata}\n{evaluation_markdown.strip()}\n"
 
-    if DECISION_LOG_HEADER in thesis_text:
-        return thesis_text.rstrip() + "\n\n" + block + "\n"
+    if EVALUATION_LOG_HEADER in log_text:
+        return log_text.rstrip() + "\n\n" + block + "\n"
 
-    return thesis_text.rstrip() + f"\n\n{DECISION_LOG_HEADER}\n\n{block}\n"
+    return log_text.rstrip() + f"\n\n{EVALUATION_LOG_HEADER}\n\n{block}\n"
 
 
 def _first_content_line(text: str) -> str:

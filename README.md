@@ -67,8 +67,8 @@ At a high level, the workflow is:
 5. Only filings that do not already have a processed marker are treated as new filings.
 6. For each new filing, the script loads the corresponding review instructions from [instructions/10-k.md](instructions/10-k.md), [instructions/10-q.md](instructions/10-q.md), or [instructions/8-k.md](instructions/8-k.md).
 7. The filing text, the full current thesis, and the selected instruction file are sent to the OpenAI evaluation layer in [openai_evaluator.py](openai_evaluator.py).
-8. The OpenAI evaluator produces a short markdown review intended to be appended to the log file Decision Log.
-9. The script appends a new Decision Log entry to the log file that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
+8. The OpenAI evaluator produces a short markdown review intended to be appended to the log file Evaluation Log.
+9. The script appends a new Evaluation Log entry to the log file that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
 10. A hidden processed marker is stored alongside the new entry so the same SEC filing will not be processed again in a future run.
 
 ### Core Components
@@ -93,7 +93,7 @@ At a high level, the workflow is:
 
 - Wraps the OpenAI API call.
 - Builds the evaluation prompt from three inputs: the thesis markdown, the SEC filing text, and the form-specific instruction file.
-- Returns markdown suitable for inclusion in the log file Decision Log.
+- Returns markdown suitable for inclusion in the log file Evaluation Log.
 
 `instructions/`
 
