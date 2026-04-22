@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openai_evaluator import EvaluationInput, OpenAIEvaluatorError, OpenAIThesisEvaluator
@@ -227,7 +227,7 @@ def _append_evaluation_log_entry(
         f"### SEC Filing Review: {filing.form} ({filing.filing_date}) - "
         f"{filing.accession_number}"
     )
-    created_at = datetime.utcnow().strftime("%Y-%m-%d")
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     metadata = (
         f"{marker}\n"
         f"- Filing URL: {filing.primary_document_url}\n"
