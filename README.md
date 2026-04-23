@@ -2,6 +2,10 @@
 
 An Investment Thesis evaluation system that utilizes OpenAI API based on SEC filings and other financial data. The system is designed to analyze and evaluate investment theses for publicly traded companies by leveraging natural language processing and machine learning techniques.
 
+## Demo
+
+See [demo.md](demo.md) for a step-by-step walkthrough of the full workflow, covering thesis generation, evaluation, and leverage analysis.
+
 ## Legal Notice
 
 Before using this project, please read [LEGAL-DISCLAIMER.md](LEGAL-DISCLAIMER.md) in full.
