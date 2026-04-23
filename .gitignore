@@ -211,3 +211,5 @@ evaluate.ps1
 evaluate.sh
 generate.ps1
 generate.sh
+leverage-evaluate.ps1
+leverage-evaluate.sh

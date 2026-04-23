@@ -257,3 +257,45 @@ python main.py --openai-model gpt-4.1-mini
 # Write logs to a custom folder
 python main.py --log-dir my-logs
 ```
+
+## Leverage Evaluator (Helper Tool)
+
+The leverage evaluator is a separate helper workflow and **not part of the original thesis evaluator pipeline** in `main.py`.
+
+- Main thesis evaluator: `main.py` writes filing review output to [log](log)
+- Leverage helper evaluator: `leverage-evaluator.py` writes leverage history output to [leverage](leverage)
+
+### Run Leverage Evaluator Directly
+
+```bash
+# Uses thesis/*.md tickers, fetches latest 10-K or 10-Q, writes leverage/<ticker>.md
+python leverage-evaluator.py
+
+# Optional flags
+python leverage-evaluator.py --filings-limit 25 --openai-model gpt-4.1-mini
+```
+
+### Use Leverage Helper Scripts
+
+This project includes helper scripts for leverage evaluation setup and execution:
+
+- Windows: `leverage-evaluate-example.ps1`
+- Linux/macOS: `leverage-evaluate-example.sh`
+
+To keep credentials private, copy and edit the example script first:
+
+1. Windows:
+   - Copy `leverage-evaluate-example.ps1` to `leverage-evaluate.ps1` (private)
+   - Replace `your_openai_api_key` and `your-email@example.com`
+   - Run: `./leverage-evaluate.ps1`
+2. Linux/macOS:
+   - Copy `leverage-evaluate-example.sh` to `leverage-evaluate.sh` (private)
+   - `chmod +x leverage-evaluate.sh`
+   - Replace `your_openai_api_key` and `your-email@example.com`
+   - Run: `./leverage-evaluate.sh`
+
+### What It Produces
+
+- One leverage history file per ticker in [leverage](leverage), named like the thesis file (for example `googl.md`).
+- Each entry references the SEC filing URL, filing accession number, and processing date.
+- Reprocessing is prevented with a processed marker (`processed-leverage-filing:<accession>`), so the same filing is not evaluated again.
