@@ -204,10 +204,10 @@ You can also run the helper scripts:
 
 ```bash
 # Windows PowerShell
-.\generate.ps1 .\thesis\pltr-draft.md
+.\generate.ps1 .\thesis\my-company-draft.md
 
 # Linux / macOS
-./generate.sh ./thesis/pltr-draft.md
+./generate.sh ./thesis/my-company-draft.md
 ```
 
 To keep credentials private, copy and edit the example script first:
