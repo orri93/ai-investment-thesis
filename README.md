@@ -191,13 +191,49 @@ Without `OPENAI_API_KEY`, the evaluator cannot produce evaluation log content. W
 
 You can create your own theses by using templates in [thesis-examples](thesis-examples).
 
+### Quick Start: Generate a Thesis with AI
+
+The `thesis-generator.py` script helps you complete and improve draft theses using OpenAI:
+
+```bash
+# Create a draft with just your initial idea or some notes
+python thesis-generator.py thesis/my-company-draft.md
+```
+
+You can also run the helper scripts:
+
+```bash
+# Windows PowerShell
+.\generate.ps1 .\thesis\pltr-draft.md
+
+# Linux / macOS
+./generate.sh ./thesis/pltr-draft.md
+```
+
+To keep credentials private, copy and edit the example script first:
+
+- Windows: copy `generate-example.ps1` to `generate.ps1`, add your real values, then run `./generate.ps1 <draft-file>`
+- Linux/macOS: copy `generate-example.sh` to `generate.sh`, add your real values, then run `./generate.sh <draft-file>`
+
+The script will:
+1. Read your draft (can be incomplete, just an idea, or partially written)
+2. Use OpenAI to research the company online if needed
+3. Refine and complete your thesis with proper structure
+4. Return a professional, investment-ready thesis document
+
+**Note:** Ensure `OPENAI_API_KEY` is set before running.
+
+**Example draft thesis:** See [thesis-examples/pltr-draft.md](thesis-examples/pltr-draft.md) to understand what a draft thesis input looks like. This is a minimal starting point that the generator will expand into a complete thesis.
+
+### Manual Thesis Creation
+
 Recommended starting points:
 
 - [thesis-examples/general-thesis.md](thesis-examples/general-thesis.md): generic template
 - [thesis-examples/amzn.md](thesis-examples/amzn.md): concrete company example
 - [thesis-examples/nvda.md](thesis-examples/nvda.md): concrete company example
 
-Steps for a new thesis:
+Steps for manual thesis creation:
 
 1. Copy [thesis-examples/general-thesis.md](thesis-examples/general-thesis.md) to a new file in [thesis](thesis).
 2. Name the file as the ticker in lowercase, for example `msft.md`, `goog.md`, or `wmt.md`.

@@ -209,3 +209,5 @@ __marimo__/
 # Local private scripts
 evaluate.ps1
 evaluate.sh
+generate.ps1
+generate.sh
