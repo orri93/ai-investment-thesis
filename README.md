@@ -93,7 +93,7 @@ At a high level, the workflow is:
 1. `main.py` scans all markdown files in [thesis](thesis).
 2. The ticker is derived from the thesis file name, so `amzn.md` maps to `AMZN`, `nvda.md` maps to `NVDA`, and so on.
 3. For every thesis, the script uses [sec_filings.py](sec_filings.py) to look up the company on SEC EDGAR and retrieve recent `10-K`, `10-Q`, and `8-K` filings.
-4. The script writes and reads decision logs in same-named files under [log](log), for example `thesis/amzn.md` -> `log/amzn.md`.
+4. The script writes and reads evaluation logs in same-named files under [log](log), for example `thesis/amzn.md` -> `log/amzn.md`.
 5. Only filings that do not already have a processed marker are treated as new filings.
 6. For each new filing, the script loads the corresponding review instructions from [instructions/10-k.md](instructions/10-k.md), [instructions/10-q.md](instructions/10-q.md), or [instructions/8-k.md](instructions/8-k.md).
 7. The filing text, the full current thesis, and the selected instruction file are sent to the OpenAI evaluation layer in [openai_evaluator.py](openai_evaluator.py).
@@ -109,7 +109,7 @@ At a high level, the workflow is:
 - Iterates through all thesis files.
 - Detects new filings.
 - Calls the evaluator.
-- Writes updated decision logs to [log](log) files.
+- Writes updated evaluation logs to [log](log) files.
 - Prints progress and summary information during the run.
 
 `sec_filings.py`
@@ -139,15 +139,15 @@ At a high level, the workflow is:
 
 `log/`
 
-- Stores one markdown file per company for generated decision logs.
+- Stores one markdown file per company for generated evaluation logs.
 - Each log file is named the same as the thesis file (for example `amzn.md`).
 - If a log file does not exist, it is created automatically with:
 	- a top-level header from the thesis ticker/file name (for example `# AMZN`)
-	- a `## Decision Log` header
+	- a `## Evaluation Log` header
 
 ### How Reprocessing Is Prevented
 
-Every generated Decision Log entry includes a hidden marker in this format:
+Every generated Evaluation Log entry includes a hidden marker in this format:
 
 ```markdown
 <!-- processed-sec-filing:0000000000-00-000000 -->
@@ -159,14 +159,14 @@ This makes the process idempotent for previously handled filings and ensures the
 
 ### What Gets Written To The Log File
 
-For each new SEC filing, the script appends a new Decision Log block to the `log/<ticker>.md` file with:
+For each new SEC filing, the script appends a new Evaluation Log block to the `log/<ticker>.md` file with:
 
 - the filing form, date, and accession number
 - the filing URL on sec.gov
 - the processing date
 - the OpenAI-generated thesis evaluation
 
-This creates a durable audit trail showing which filing drove each new decision log entry.
+This creates a durable audit trail showing which filing drove each new evaluation log entry.
 
 ### Runtime Output
 
@@ -185,7 +185,7 @@ The script depends on both of these environment variables being configured befor
 - `OPENAI_API_KEY` for the OpenAI API
 - `SEC_USER_AGENT` for SEC EDGAR access
 
-Without `OPENAI_API_KEY`, the evaluator cannot produce decision log content. Without `SEC_USER_AGENT`, the SEC client will refuse to start.
+Without `OPENAI_API_KEY`, the evaluator cannot produce evaluation log content. Without `SEC_USER_AGENT`, the SEC client will refuse to start.
 
 ## Create Your Own Thesis Files
 
