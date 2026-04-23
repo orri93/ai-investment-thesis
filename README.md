@@ -1,6 +1,21 @@
-# AI Investment Thesis evaluation system
+# SEC-Driven Investment Thesis Revalidation (OpenAI + EDGAR)
 
 An Investment Thesis evaluation system that utilizes OpenAI API based on SEC filings and other financial data. The system is designed to analyze and evaluate investment theses for publicly traded companies by leveraging natural language processing and machine learning techniques.
+
+## Who This Is For / Not For
+
+**This tool is for you if:**
+- You write investment theses or memos before buying a stock
+- You want a structured, repeatable way to revisit your thesis when new filings drop
+- You value an audit trail — knowing *why* you held, trimmed, or exited a position
+- You are comfortable setting up a Python environment and an OpenAI API key
+
+**This tool is not for you if:**
+- You are looking for stock picks or trading signals
+- You want fully automated buy/sell decisions
+- You expect the output to substitute for professional financial advice
+
+Outputs are evidence-based summaries grounded in SEC filings, not investment recommendations. See [LEGAL-DISCLAIMER.md](LEGAL-DISCLAIMER.md) for full details.
 
 ## Demo
 
