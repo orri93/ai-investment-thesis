@@ -54,6 +54,36 @@ export SEC_USER_AGENT="ai-investment-thesis/1.0 your-email@example.com"
 
 Use a real email address or other valid contact detail in the value. The SEC client in [sec_filings.py](sec_filings.py) will fail at startup if this variable is missing.
 
+## Quick Start: Using Evaluate Scripts
+
+This project includes example evaluation scripts that set up the environment and run the application:
+
+- **Windows:** `evaluate-example.ps1`
+- **Linux/macOS:** `evaluate-example.sh`
+
+To create a private version with your actual credentials:
+
+### For Windows
+
+1. Copy `evaluate-example.ps1` to `evaluate.ps1` (this file is git-ignored)
+2. Open `evaluate.ps1` in your editor
+3. Replace the placeholder values:
+   - `your_openai_api_key` → your actual OpenAI API key
+   - `your-email@example.com` → your actual email address
+4. Run the script: `.\evaluate.ps1`
+
+### For Linux/macOS
+
+1. Copy `evaluate-example.sh` to `evaluate.sh` (this file is git-ignored)
+2. Make it executable: `chmod +x evaluate.sh`
+3. Open `evaluate.sh` in your editor
+4. Replace the placeholder values:
+   - `your_openai_api_key` → your actual OpenAI API key
+   - `your-email@example.com` → your actual email address
+5. Run the script: `./evaluate.sh`
+
+The example scripts are safe to commit to version control; the private versions containing your credentials should never be committed.
+
 ## How The System Works
 
 The system is a batch thesis revalidation pipeline driven by new SEC filings.
