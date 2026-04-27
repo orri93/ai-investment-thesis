@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from openai_evaluator import EvaluationInput, OpenAIEvaluatorError, OpenAIThesisEvaluator
@@ -99,6 +100,10 @@ def main() -> int:
             log_path = log_dir / thesis_path.name
             log_text = _load_or_initialize_log(log_path, ticker)
 
+            purchase_date = _parse_purchase_date(thesis_text)
+            if purchase_date:
+                print(f"- Position purchase date: {purchase_date} (filtering earlier filings)")
+
             filings = sec_client.list_filings(
                 ticker,
                 forms=SUPPORTED_FORMS,
@@ -106,6 +111,13 @@ def main() -> int:
                 limit=args.filings_limit,
             )
             print(f"- SEC filings discovered: {len(filings)}")
+
+            if purchase_date:
+                filings = [
+                    f for f in filings
+                    if _filing_date_as_date(f.filing_date) >= purchase_date
+                ]
+                print(f"- SEC filings after purchase date: {len(filings)}")
 
             new_filings = [
                 filing
@@ -239,6 +251,35 @@ def _append_evaluation_log_entry(
         return log_text.rstrip() + "\n\n" + block + "\n"
 
     return log_text.rstrip() + f"\n\n{EVALUATION_LOG_HEADER}\n\n{block}\n"
+
+
+_PURCHASED_PATTERN = re.compile(
+    r"[-*]\s*Purchased\s*:\s*(.+)",
+    re.IGNORECASE,
+)
+
+_DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d", "%m/%d/%Y", "%d %b %Y", "%d %B %Y")
+
+
+def _parse_purchase_date(thesis_text: str) -> date | None:
+    """Return the earliest purchase date found in the thesis Position section, or None."""
+    earliest: date | None = None
+    for match in _PURCHASED_PATTERN.finditer(thesis_text):
+        raw = match.group(1).strip()
+        for fmt in _DATE_FORMATS:
+            try:
+                parsed = datetime.strptime(raw, fmt).date()
+                if earliest is None or parsed < earliest:
+                    earliest = parsed
+                break
+            except ValueError:
+                continue
+    return earliest
+
+
+def _filing_date_as_date(filing_date: str) -> date:
+    """Parse a YYYY-MM-DD filing date string into a date object."""
+    return datetime.strptime(filing_date, "%Y-%m-%d").date()
 
 
 def _first_content_line(text: str) -> str:
