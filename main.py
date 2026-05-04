@@ -317,7 +317,7 @@ def _filing_date_as_date(filing_date: str) -> date:
 def _first_content_line(text: str) -> str:
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped:
+        if stripped and not stripped.startswith("#"):
             return stripped
     return "(no content)"
 

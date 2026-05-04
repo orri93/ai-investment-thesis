@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -493,6 +494,7 @@ def _build_leverage_status_block(
     debt_to_assets = calculated.get("debt_to_assets")
     category = _leverage_category(nd_to_ebitda, interest_coverage)
 
+    verdict = _extract_verdict(report_markdown)
     summary = _first_content_line(report_markdown)
     block = [
         LEVERAGE_STATUS_START_MARKER,
@@ -504,16 +506,28 @@ def _build_leverage_status_block(
         f"- Debt-to-Assets: {_fmt_ratio(debt_to_assets)}",
         f"- Net Debt / EBITDA: {_fmt_ratio(nd_to_ebitda)}",
         f"- Interest Coverage: {_fmt_ratio(interest_coverage)}",
+        f"- Leverage verdict: {verdict}",
         f"- Leverage evaluator summary: {summary}",
         LEVERAGE_STATUS_END_MARKER,
     ]
     return block
 
 
+def _extract_verdict(text: str) -> str:
+    for line in text.splitlines():
+        if "verdict" in line.lower():
+            cleaned = line.strip()
+            cleaned = re.sub(r"^#+\s*", "", cleaned)
+            cleaned = cleaned.replace("*", "").replace("_", "")
+            cleaned = cleaned.strip(" -—:")
+            return cleaned
+    return "(no verdict)"
+
+
 def _first_content_line(text: str) -> str:
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped:
+        if stripped and not stripped.startswith("#"):
             return stripped
     return "(no content)"
 
