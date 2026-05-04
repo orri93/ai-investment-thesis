@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,12 +16,15 @@ ROOT_DIR = Path(__file__).resolve().parent
 THESIS_DIR = ROOT_DIR / "thesis"
 LEVERAGE_DIR = ROOT_DIR / "leverage"
 INSTRUCTIONS_DIR = ROOT_DIR / "instructions"
+STATUS_DIR = ROOT_DIR / "status"
 
 LEVERAGE_FORMS = ("10-K", "10-Q")
 LEVERAGE_INSTRUCTION_FILE = "leverage.md"
 
 PROCESSED_MARKER_TEMPLATE = "<!-- processed-leverage-filing:{accession} -->"
 LEVERAGE_LOG_HEADER = "## Leverage Evaluation Log"
+LEVERAGE_STATUS_START_MARKER = "<!-- leverage-status-start -->"
+LEVERAGE_STATUS_END_MARKER = "<!-- leverage-status-end -->"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Path to instruction markdown files. Default: {INSTRUCTIONS_DIR}",
     )
     parser.add_argument(
+        "--status-dir",
+        default=str(STATUS_DIR),
+        help=f"Path to thesis status markdown files. Default: {STATUS_DIR}",
+    )
+    parser.add_argument(
         "--filings-limit",
         type=int,
         default=25,
@@ -64,6 +73,7 @@ def main() -> int:
     thesis_dir = Path(args.thesis_dir)
     leverage_dir = Path(args.leverage_dir)
     instructions_dir = Path(args.instructions_dir)
+    status_dir = Path(args.status_dir)
 
     try:
         instruction_text = _load_instruction_text(instructions_dir)
@@ -87,6 +97,7 @@ def main() -> int:
     print("Leverage evaluation run started")
     print(f"- Thesis files: {len(thesis_files)}")
     print(f"- Leverage output directory: {leverage_dir}")
+    print(f"- Status directory: {status_dir} (existing files only)")
     print("- SEC forms considered: 10-K, 10-Q (latest only)")
     print()
 
@@ -146,7 +157,19 @@ def main() -> int:
             )
             leverage_path.write_text(leverage_log_text, encoding="utf-8")
 
+            status_path = status_dir / thesis_path.name
+            status_updated = _append_leverage_to_existing_status(
+                status_path=status_path,
+                filing=latest_filing,
+                calculated=calculated,
+                report_markdown=report,
+            )
+
             print("- Leverage report appended")
+            if status_updated:
+                print(f"- Status updated: {status_path.name}")
+            else:
+                print("- Status update skipped (missing status file or section)")
             print()
             processed_count += 1
 
@@ -376,6 +399,137 @@ def _leverage_category(
         return "Low"
 
     return "Moderate"
+
+
+def _append_leverage_to_existing_status(
+    *,
+    status_path: Path,
+    filing: FilingRecord,
+    calculated: dict[str, float | None],
+    report_markdown: str,
+) -> bool:
+    if not status_path.exists():
+        return False
+
+    status_text = status_path.read_text(encoding="utf-8")
+    updated_status = _append_leverage_block_in_latest_assessment(
+        status_text=status_text,
+        filing=filing,
+        calculated=calculated,
+        report_markdown=report_markdown,
+    )
+    if updated_status is None or updated_status == status_text:
+        return False
+
+    status_path.write_text(updated_status, encoding="utf-8")
+    return True
+
+
+def _append_leverage_block_in_latest_assessment(
+    *,
+    status_text: str,
+    filing: FilingRecord,
+    calculated: dict[str, float | None],
+    report_markdown: str,
+) -> str | None:
+    lines = status_text.splitlines()
+    latest_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "## latest assessment":
+            latest_idx = i
+            break
+    if latest_idx == -1:
+        return None
+
+    section_end = len(lines)
+    for i in range(latest_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped.startswith("## "):
+            section_end = i
+            break
+
+    section_lines = lines[latest_idx + 1 : section_end]
+    cleaned_section = _remove_existing_leverage_status_block(section_lines)
+    leverage_block = _build_leverage_status_block(
+        filing=filing,
+        calculated=calculated,
+        report_markdown=report_markdown,
+    )
+
+    while cleaned_section and not cleaned_section[-1].strip():
+        cleaned_section.pop()
+    new_section = cleaned_section + [""] + leverage_block
+
+    new_lines = lines[: latest_idx + 1] + new_section + lines[section_end:]
+    return "\n".join(new_lines).rstrip() + "\n"
+
+
+def _remove_existing_leverage_status_block(lines: list[str]) -> list[str]:
+    start = -1
+    end = -1
+    for i, line in enumerate(lines):
+        if line.strip() == LEVERAGE_STATUS_START_MARKER:
+            start = i
+        if line.strip() == LEVERAGE_STATUS_END_MARKER:
+            end = i
+            if start != -1:
+                break
+
+    if start == -1 or end == -1 or end < start:
+        return list(lines)
+
+    return lines[:start] + lines[end + 1 :]
+
+
+def _build_leverage_status_block(
+    *,
+    filing: FilingRecord,
+    calculated: dict[str, float | None],
+    report_markdown: str,
+) -> list[str]:
+    updated_on = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    nd_to_ebitda = calculated.get("net_debt_to_ebitda")
+    interest_coverage = calculated.get("interest_coverage")
+    debt_to_equity = calculated.get("debt_to_equity")
+    debt_to_assets = calculated.get("debt_to_assets")
+    category = _leverage_category(nd_to_ebitda, interest_coverage)
+
+    verdict = _extract_verdict(report_markdown)
+    summary = _first_content_line(report_markdown)
+    block = [
+        LEVERAGE_STATUS_START_MARKER,
+        f"### Latest leverage assessment ({filing.form} {filing.filing_date})",
+        f"- Source leverage filing: {filing.form} ({filing.filing_date}) - {filing.accession_number}",
+        f"- Leverage updated on: {updated_on}",
+        f"- Leverage category: {category}",
+        f"- Debt-to-Equity: {_fmt_ratio(debt_to_equity)}",
+        f"- Debt-to-Assets: {_fmt_ratio(debt_to_assets)}",
+        f"- Net Debt / EBITDA: {_fmt_ratio(nd_to_ebitda)}",
+        f"- Interest Coverage: {_fmt_ratio(interest_coverage)}",
+        f"- Leverage verdict: {verdict}",
+        f"- Leverage evaluator summary: {summary}",
+        LEVERAGE_STATUS_END_MARKER,
+    ]
+    return block
+
+
+def _extract_verdict(text: str) -> str:
+    for line in text.splitlines():
+        if "verdict" in line.lower():
+            cleaned = line.strip()
+            cleaned = re.sub(r"^#+\s*", "", cleaned)
+            cleaned = cleaned.replace("*", "").replace("_", "")
+            cleaned = cleaned.strip(" -—:")
+            return cleaned
+    return "(no verdict)"
+
+
+def _first_content_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return "(no content)"
 
 
 if __name__ == "__main__":
