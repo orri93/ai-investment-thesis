@@ -14,6 +14,8 @@ ROOT_DIR = Path(__file__).resolve().parent
 THESIS_DIR = ROOT_DIR / "thesis"
 INSTRUCTIONS_DIR = ROOT_DIR / "instructions"
 LOG_DIR = ROOT_DIR / "log"
+STATUS_DIR = ROOT_DIR / "status"
+STATUS_INSTRUCTION_FILE = "status.md"
 
 FORM_INSTRUCTION_FILES = {
     "10-K": "10-k.md",
@@ -23,6 +25,7 @@ FORM_INSTRUCTION_FILES = {
 
 PROCESSED_MARKER_TEMPLATE = "<!-- processed-sec-filing:{accession} -->"
 EVALUATION_LOG_HEADER = "## Evaluation Log"
+STATUS_SOURCE_MARKER_TEMPLATE = "<!-- status-source-accession:{accession} -->"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(LOG_DIR),
         help=f"Path to decision log markdown files. Default: {LOG_DIR}",
     )
+    parser.add_argument(
+        "--status-dir",
+        default=str(STATUS_DIR),
+        help=f"Path to thesis status markdown files. Default: {STATUS_DIR}",
+    )
     return parser
 
 
@@ -66,9 +74,11 @@ def main() -> int:
     thesis_dir = Path(args.thesis_dir)
     instructions_dir = Path(args.instructions_dir)
     log_dir = Path(args.log_dir)
+    status_dir = Path(args.status_dir)
 
     try:
         instruction_texts = _load_instruction_texts(instructions_dir)
+        status_instruction_text = _load_status_instruction_text(instructions_dir)
         sec_client = SecFilingsClient()
         evaluator = OpenAIThesisEvaluator(model=args.openai_model)
     except (SecEdgarError, OpenAIEvaluatorError, FileNotFoundError, ValueError) as exc:
@@ -83,10 +93,12 @@ def main() -> int:
     print("SEC thesis revalidation run started")
     print(f"- Thesis files: {len(thesis_files)}")
     print(f"- Log directory: {log_dir}")
+    print(f"- Status directory: {status_dir}")
     print(f"- Forms: {', '.join(SUPPORTED_FORMS)}")
     print()
 
     log_dir.mkdir(parents=True, exist_ok=True)
+    status_dir.mkdir(parents=True, exist_ok=True)
 
     processed_count = 0
     skipped_count = 0
@@ -176,6 +188,19 @@ def main() -> int:
                 print(f"    {first_line}")
                 processed_count += 1
 
+            status_path = status_dir / thesis_path.name
+            status_updated = _update_status_file_if_needed(
+                ticker=ticker,
+                log_text=log_text,
+                status_path=status_path,
+                evaluator=evaluator,
+                status_instruction_text=status_instruction_text,
+            )
+            if status_updated:
+                print(f"- Status updated: {status_path.name}")
+            else:
+                print("- Status unchanged (no newer relevant filing)")
+
             print()
         except (SecEdgarError, OpenAIEvaluatorError, ValueError, FileNotFoundError) as exc:
             print(f"- Failed: {exc}", file=sys.stderr)
@@ -201,6 +226,13 @@ def _load_instruction_texts(instructions_dir: Path) -> dict[str, str]:
             raise FileNotFoundError(f"Missing instruction file: {file_path}")
         result[form] = file_path.read_text(encoding="utf-8").strip()
     return result
+
+
+def _load_status_instruction_text(instructions_dir: Path) -> str:
+    path = instructions_dir / STATUS_INSTRUCTION_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"Missing status instruction file: {path}")
+    return path.read_text(encoding="utf-8").strip()
 
 
 def _ticker_from_thesis_path(thesis_path: Path) -> str:
@@ -288,6 +320,166 @@ def _first_content_line(text: str) -> str:
         if stripped:
             return stripped
     return "(no content)"
+
+
+def _update_status_file_if_needed(
+    *,
+    ticker: str,
+    log_text: str,
+    status_path: Path,
+    evaluator: OpenAIThesisEvaluator,
+    status_instruction_text: str,
+) -> bool:
+    latest = _latest_relevant_entry(log_text)
+    if latest is None:
+        return False
+
+    existing_text = None
+    existing_source = None
+    if status_path.exists():
+        existing_text = status_path.read_text(encoding="utf-8")
+        existing_source = _extract_status_source_accession(existing_text)
+    if existing_source == latest["accession"]:
+        return False
+
+    status_text = evaluator.render_status_markdown(
+        ticker=ticker,
+        filing_form=latest["form"],
+        filing_date=latest["filing_date"],
+        accession_number=latest["accession"],
+        evaluation_markdown=latest["evaluation"],
+        status_instruction_text=status_instruction_text,
+        previous_status_markdown=existing_text,
+    )
+
+    # Guard against malformed responses by enforcing the status source marker.
+    required_marker = STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["accession"])
+    if required_marker not in status_text:
+        status_text = "\n".join(
+            [
+                f"# {ticker} Thesis Status",
+                "",
+                required_marker,
+                f"- Source filing: {latest['form']} ({latest['filing_date']}) - {latest['accession']}",
+                f"- Updated on: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+                "- Overall status: Yellow",
+                "- Verdict: Watch",
+                "- Thesis validity: Intact",
+                "",
+                "## Parts",
+                "- Filing impact: Yellow",
+                "",
+                "## Latest assessment",
+                f"- {_first_content_line(latest['evaluation'])}",
+            ]
+        )
+
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(status_text.rstrip() + "\n", encoding="utf-8")
+    return True
+
+
+def _extract_status_source_accession(status_text: str) -> str | None:
+    prefix = "<!-- status-source-accession:"
+    for line in status_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix) and stripped.endswith("-->"):
+            return stripped[len(prefix) : -3]
+    return None
+
+
+def _latest_relevant_entry(log_text: str) -> dict[str, str] | None:
+    entries = _parse_log_entries(log_text)
+    if not entries:
+        return None
+
+    relevant = [entry for entry in entries if _entry_is_relevant_for_status(entry)]
+    if not relevant:
+        return None
+
+    relevant.sort(
+        key=lambda entry: (
+            entry["filing_date"],
+            entry["accession"],
+        )
+    )
+    return relevant[-1]
+
+
+def _parse_log_entries(log_text: str) -> list[dict[str, str]]:
+    header_re = re.compile(
+        r"^### SEC Filing Review:\s*(10-K|10-Q|8-K)\s*\((\d{4}-\d{2}-\d{2})\)\s*-\s*([0-9-]+)\s*$",
+        re.MULTILINE,
+    )
+    matches = list(header_re.finditer(log_text))
+    entries: list[dict[str, str]] = []
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(log_text)
+        block = log_text[start:end].strip()
+        evaluation = _extract_evaluation_text_from_block(block)
+        entries.append(
+            {
+                "form": match.group(1),
+                "filing_date": match.group(2),
+                "accession": match.group(3),
+                "evaluation": evaluation,
+            }
+        )
+    return entries
+
+
+def _extract_evaluation_text_from_block(block: str) -> str:
+    lines = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+            continue
+        if stripped.startswith("<!-- processed-sec-filing:"):
+            continue
+        if stripped.lower().startswith("- filing url:"):
+            continue
+        if stripped.lower().startswith("- processed on:"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _entry_is_relevant_for_status(entry: dict[str, str]) -> bool:
+    if entry["form"] in ("10-K", "10-Q"):
+        return True
+
+    verdict = _extract_verdict(entry["evaluation"])
+    if verdict and verdict.upper() != "NO ACTION":
+        return True
+
+    return not _is_non_impactful_8k_language(entry["evaluation"])
+
+
+def _extract_verdict(text: str) -> str | None:
+    for line in text.splitlines():
+        if "verdict" not in line.lower() or ":" not in line:
+            continue
+        _, right = line.split(":", 1)
+        cleaned = re.sub(r"[^A-Za-z ]", " ", right)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned:
+            return cleaned.title()
+    return None
+
+
+def _is_non_impactful_8k_language(text: str) -> bool:
+    lowered = text.lower()
+    phrases = (
+        "informational",
+        "does not affect",
+        "no impact",
+        "no immediate impact",
+        "does not necessitate",
+        "no action",
+    )
+    return any(phrase in lowered for phrase in phrases)
 
 
 if __name__ == "__main__":

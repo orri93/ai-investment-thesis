@@ -83,6 +83,54 @@ class OpenAIThesisEvaluator:
             raise OpenAIEvaluatorError("OpenAI evaluation returned no text.")
         return text.strip()
 
+    def render_status_markdown(
+        self,
+        *,
+        ticker: str,
+        filing_form: str,
+        filing_date: str,
+        accession_number: str,
+        evaluation_markdown: str,
+        status_instruction_text: str,
+        previous_status_markdown: str | None = None,
+    ) -> str:
+        system_prompt = (
+            "You write strict, deterministic markdown status files for investment theses. "
+            "Use only the provided evaluation text and instructions."
+        )
+
+        user_prompt = (
+            f"Ticker: {ticker}\n"
+            f"Source filing: {filing_form} ({filing_date}) - {accession_number}\n\n"
+            "Status instructions:\n"
+            f"{status_instruction_text}\n\n"
+            "Input SEC evaluation markdown (already generated):\n"
+            f"{evaluation_markdown}\n\n"
+            "Previous status markdown (for continuity, may be empty):\n"
+            f"{previous_status_markdown or ''}\n\n"
+            "Output requirements:\n"
+            "1) Return markdown only; no code fences.\n"
+            "2) Return a complete status file document, not a partial patch.\n"
+            "3) Use this source accession exactly in marker and metadata.\n"
+            "4) Keep claims consistent with the provided SEC evaluation text."
+        )
+
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+        except Exception as exc:
+            raise OpenAIEvaluatorError(f"OpenAI status rendering request failed: {exc}") from exc
+
+        text = getattr(response, "output_text", "")
+        if not text or not text.strip():
+            raise OpenAIEvaluatorError("OpenAI status rendering returned no text.")
+        return text.strip()
+
     def _prepare_filing_text(self, filing_text: str) -> str:
         # Filings are often HTML-heavy; normalize whitespace and cap size to stay token-safe.
         without_tags = re.sub(r"<[^>]+>", " ", filing_text)
