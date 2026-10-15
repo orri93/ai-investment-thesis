@@ -3,14 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
+from filing_text import build_filing_excerpt
 from sec_filings import FilingRecord, SecEdgarError, SecFilingsClient
 
 
@@ -108,7 +108,7 @@ def main() -> int:
         sec_client = SecFilingsClient()
         openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         model = args.openai_model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-    except (SecEdgarError, FileNotFoundError, ValueError) as exc:
+    except (SecEdgarError, OpenAIError, FileNotFoundError, ValueError) as exc:
         print(f"Startup error: {exc}", file=sys.stderr)
         return 1
 
@@ -312,7 +312,7 @@ def _fetch_filing_texts(
                     ticker,
                     accession_number=filing.accession_number,
                 )
-                text = _prepare_filing_text(doc.text, max_chars=max_chars)
+                text = build_filing_excerpt(filing.form, doc.text, max_chars=max_chars)
                 results.append({
                     "form": filing.form,
                     "filing_date": filing.filing_date,
@@ -325,23 +325,6 @@ def _fetch_filing_texts(
                 continue
 
     return results
-
-
-def _prepare_filing_text(filing_text: str, *, max_chars: int) -> str:
-    """Clean HTML tags and normalize whitespace, then truncate."""
-    text = filing_text
-    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
-    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
-    text = re.sub(r"(?i)</?(br|p|div|tr|li|h1|h2|h3|h4|h5|h6|table|section)[^>]*>", "\n", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-    lines = [line for line in lines if line]
-    normalized = "\n".join(lines)
-
-    if len(normalized) <= max_chars:
-        return normalized
-    return normalized[:max_chars]
 
 
 # ---------------------------------------------------------------------------

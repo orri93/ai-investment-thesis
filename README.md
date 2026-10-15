@@ -121,7 +121,7 @@ At a high level, the workflow is:
 4. The script writes and reads evaluation logs in same-named files under [log](log), for example `thesis/amzn.md` -> `log/amzn.md`.
 5. Only filings that do not already have a processed marker are treated as new filings.
 6. For each new filing, the script loads the corresponding review instructions from [instructions/10-k.md](instructions/10-k.md), [instructions/10-q.md](instructions/10-q.md), or [instructions/8-k.md](instructions/8-k.md).
-7. The filing text, the full current thesis, and the selected instruction file are sent to the OpenAI evaluation layer in [openai_evaluator.py](openai_evaluator.py).
+7. The filing is converted to plain text by [filing_text.py](filing_text.py). For `10-K`/`10-Q` filings the excerpt is built from the key sections (MD&A, financial statements, risk factors, market risk) within the size budget; for `8-K` filings the `EX-99` exhibits (for example the earnings press release) are included alongside the cover document. That excerpt, the full current thesis, and the selected instruction file are sent to the OpenAI evaluation layer in [openai_evaluator.py](openai_evaluator.py).
 8. The OpenAI evaluator produces a short markdown review intended to be appended to the log file Evaluation Log.
 9. The script appends a new Evaluation Log entry to the log file that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
 10. A hidden processed marker is stored alongside the new entry so the same SEC filing will not be processed again in a future run.
@@ -142,6 +142,7 @@ At a high level, the workflow is:
 - Resolves tickers to SEC CIK values.
 - Lists available `10-K`, `10-Q`, and `8-K` filings.
 - Fetches the primary filing document from SEC EDGAR.
+- Lists a filing's documents from its index page and downloads exhibits (such as `EX-99.1`).
 - Enforces the requirement that `SEC_USER_AGENT` must be configured.
 
 `openai_evaluator.py`
@@ -324,3 +325,4 @@ To keep credentials private, copy and edit the example script first:
 - One leverage history file per ticker in [leverage](leverage), named like the thesis file (for example `googl.md`).
 - Each entry references the SEC filing URL, filing accession number, and processing date.
 - Reprocessing is prevented with a processed marker (`processed-leverage-filing:<accession>`), so the same filing is not evaluated again.
+- If an existing `status/<ticker>.md` file is missing the leverage block for the latest processed filing, it is restored from the leverage log without calling OpenAI. `main.py` preserves this block when it regenerates a status file.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -69,6 +71,28 @@ class FilingDocument:
     filing: FilingRecord
     content: bytes
     content_type: str | None = None
+    encoding: str = "utf-8"
+
+    @property
+    def text(self) -> str:
+        return self.content.decode(self.encoding, errors="replace")
+
+
+@dataclass(frozen=True)
+class FilingAttachment:
+    """A document listed in a filing's index page (primary document, exhibits, etc.)."""
+
+    sequence: str
+    description: str
+    document_type: str
+    file_name: str
+    url: str
+
+
+@dataclass(frozen=True)
+class FilingExhibit:
+    attachment: FilingAttachment
+    content: bytes
     encoding: str = "utf-8"
 
     @property
@@ -267,6 +291,34 @@ class SecFilingsClient:
         output_path.write_bytes(document.content)
         return output_path
 
+    def list_filing_attachments(self, filing: FilingRecord) -> list[FilingAttachment]:
+        """List the documents in a filing (primary document and exhibits) from its index page."""
+        index_url = f"{filing.archive_folder_url}{filing.accession_number}-index.htm"
+        content, _ = self._get_bytes(index_url, accept="text/html")
+        return _parse_filing_index(content.decode("utf-8", errors="replace"), filing)
+
+    def fetch_exhibits(
+        self,
+        filing: FilingRecord,
+        *,
+        type_prefixes: Sequence[str] = ("EX-99",),
+        limit: int = 3,
+        encoding: str = "utf-8",
+    ) -> list[FilingExhibit]:
+        """Download text exhibits whose type starts with one of type_prefixes (e.g. EX-99.1)."""
+        prefixes = tuple(prefix.upper() for prefix in type_prefixes)
+        exhibits: list[FilingExhibit] = []
+        for attachment in self.list_filing_attachments(filing):
+            if len(exhibits) >= limit:
+                break
+            if not attachment.document_type.upper().startswith(prefixes):
+                continue
+            if not attachment.file_name.lower().endswith((".htm", ".html", ".txt")):
+                continue
+            content, _ = self._get_bytes(attachment.url)
+            exhibits.append(FilingExhibit(attachment=attachment, content=content, encoding=encoding))
+        return exhibits
+
     def _load_company_cache(self) -> dict[str, CompanyInfo]:
         if self._company_cache is not None:
             return self._company_cache
@@ -372,6 +424,43 @@ class SecFilingsClient:
         if value in (None, ""):
             return None
         return str(value)
+
+
+def _parse_filing_index(index_html: str, filing: FilingRecord) -> list[FilingAttachment]:
+    table_match = re.search(
+        r'(?is)<table[^>]*summary="Document Format Files"[^>]*>(.*?)</table>',
+        index_html,
+    )
+    if not table_match:
+        return []
+
+    attachments: list[FilingAttachment] = []
+    for row in re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", table_match.group(1)):
+        cells = re.findall(r"(?is)<td[^>]*>(.*?)</td>", row)
+        if len(cells) < 4:
+            continue
+        href_match = re.search(r'href="([^"]+)"', cells[2])
+        if not href_match:
+            continue
+        # iXBRL documents are linked through the viewer, e.g. /ix?doc=/Archives/...
+        file_name = href_match.group(1).split("?doc=")[-1].rsplit("/", 1)[-1]
+        if not file_name:
+            continue
+        attachments.append(
+            FilingAttachment(
+                sequence=_cell_text(cells[0]),
+                description=_cell_text(cells[1]),
+                document_type=_cell_text(cells[3]),
+                file_name=file_name,
+                url=f"{filing.archive_folder_url}{file_name}",
+            )
+        )
+    return attachments
+
+
+def _cell_text(cell_html: str) -> str:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", cell_html))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def list_available_filings(

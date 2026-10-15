@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 
 class ThesisGeneratorError(Exception):
@@ -29,7 +29,10 @@ class ThesisGenerator:
     """Generates and refines investment theses using OpenAI."""
 
     def __init__(self, model: str | None = None):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        try:
+            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        except OpenAIError as exc:
+            raise ThesisGeneratorError(f"Could not initialize OpenAI client: {exc}") from exc
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.root_dir = Path(__file__).resolve().parent
         self.examples_dir = self.root_dir / "thesis-examples"

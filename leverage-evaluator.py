@@ -10,6 +10,12 @@ from pathlib import Path
 from openai_evaluator import LeverageMetrics, OpenAILeverageError, OpenAILeverageEvaluator
 
 from sec_filings import FilingRecord, SecEdgarError, SecFilingsClient
+from status_file import (
+    LEVERAGE_STATUS_END_MARKER,
+    LEVERAGE_STATUS_START_MARKER,
+    extract_leverage_block,
+    insert_leverage_block,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -23,8 +29,15 @@ LEVERAGE_INSTRUCTION_FILE = "leverage.md"
 
 PROCESSED_MARKER_TEMPLATE = "<!-- processed-leverage-filing:{accession} -->"
 LEVERAGE_LOG_HEADER = "## Leverage Evaluation Log"
-LEVERAGE_STATUS_START_MARKER = "<!-- leverage-status-start -->"
-LEVERAGE_STATUS_END_MARKER = "<!-- leverage-status-end -->"
+LEVERAGE_ENTRY_HEADER_PREFIX = "### Leverage Review:"
+LEVERAGE_REPORT_HEADER = "#### Leverage Evaluation Report"
+LEVERAGE_EXTRACTION_HEADER = "#### Extraction JSON"
+RATIO_LABELS = {
+    "Debt-to-Equity": "debt_to_equity",
+    "Debt-to-Assets": "debt_to_assets",
+    "Net Debt / EBITDA": "net_debt_to_ebitda",
+    "Interest Coverage (EBIT / Interest Expense)": "interest_coverage",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,6 +139,13 @@ def main() -> int:
                     f"{latest_filing.form} {latest_filing.filing_date} "
                     f"({latest_filing.accession_number})"
                 )
+                status_path = status_dir / thesis_path.name
+                if _restore_leverage_status_if_missing(
+                    status_path=status_path,
+                    leverage_log_text=leverage_log_text,
+                    filing=latest_filing,
+                ):
+                    print(f"- Status leverage block restored: {status_path.name}")
                 print()
                 skipped_count += 1
                 continue
@@ -432,53 +452,76 @@ def _append_leverage_block_in_latest_assessment(
     calculated: dict[str, float | None],
     report_markdown: str,
 ) -> str | None:
-    lines = status_text.splitlines()
-    latest_idx = -1
-    for i, line in enumerate(lines):
-        if line.strip().lower() == "## latest assessment":
-            latest_idx = i
-            break
-    if latest_idx == -1:
-        return None
-
-    section_end = len(lines)
-    for i in range(latest_idx + 1, len(lines)):
-        stripped = lines[i].strip()
-        if stripped.startswith("## "):
-            section_end = i
-            break
-
-    section_lines = lines[latest_idx + 1 : section_end]
-    cleaned_section = _remove_existing_leverage_status_block(section_lines)
     leverage_block = _build_leverage_status_block(
         filing=filing,
         calculated=calculated,
         report_markdown=report_markdown,
     )
-
-    while cleaned_section and not cleaned_section[-1].strip():
-        cleaned_section.pop()
-    new_section = cleaned_section + [""] + leverage_block
-
-    new_lines = lines[: latest_idx + 1] + new_section + lines[section_end:]
-    return "\n".join(new_lines).rstrip() + "\n"
+    return insert_leverage_block(status_text, leverage_block)
 
 
-def _remove_existing_leverage_status_block(lines: list[str]) -> list[str]:
-    start = -1
-    end = -1
-    for i, line in enumerate(lines):
-        if line.strip() == LEVERAGE_STATUS_START_MARKER:
-            start = i
-        if line.strip() == LEVERAGE_STATUS_END_MARKER:
-            end = i
-            if start != -1:
-                break
+def _restore_leverage_status_if_missing(
+    *,
+    status_path: Path,
+    leverage_log_text: str,
+    filing: FilingRecord,
+) -> bool:
+    """Re-add the leverage block for an already-processed filing if the status file lost it."""
+    if not status_path.exists():
+        return False
 
-    if start == -1 or end == -1 or end < start:
-        return list(lines)
+    status_text = status_path.read_text(encoding="utf-8")
+    existing_block = extract_leverage_block(status_text)
+    if existing_block and any(filing.accession_number in line for line in existing_block):
+        return False
 
-    return lines[:start] + lines[end + 1 :]
+    logged = _logged_leverage_entry(leverage_log_text, filing.accession_number)
+    if logged is None:
+        return False
+    calculated, report_markdown = logged
+
+    return _append_leverage_to_existing_status(
+        status_path=status_path,
+        filing=filing,
+        calculated=calculated,
+        report_markdown=report_markdown,
+    )
+
+
+def _logged_leverage_entry(
+    log_text: str,
+    accession_number: str,
+) -> tuple[dict[str, float | None], str] | None:
+    """Recover calculated ratios and the report markdown for a filing from the leverage log."""
+    marker = PROCESSED_MARKER_TEMPLATE.format(accession=accession_number)
+    marker_idx = log_text.find(marker)
+    if marker_idx == -1:
+        return None
+
+    next_entry_idx = log_text.find(f"\n{LEVERAGE_ENTRY_HEADER_PREFIX}", marker_idx)
+    entry = log_text[marker_idx : next_entry_idx if next_entry_idx != -1 else len(log_text)]
+
+    report_start = entry.find(LEVERAGE_REPORT_HEADER)
+    if report_start == -1:
+        return None
+
+    calculated: dict[str, float | None] = {key: None for key in RATIO_LABELS.values()}
+    for line in entry[:report_start].splitlines():
+        match = re.match(r"^\|\s*(.+?)\s*\|\s*(.+?)\s*\|$", line.strip())
+        if not match or match.group(1) not in RATIO_LABELS:
+            continue
+        value = match.group(2).rstrip("x").strip()
+        try:
+            calculated[RATIO_LABELS[match.group(1)]] = float(value)
+        except ValueError:
+            calculated[RATIO_LABELS[match.group(1)]] = None
+
+    report_start += len(LEVERAGE_REPORT_HEADER)
+    report_end = entry.rfind(LEVERAGE_EXTRACTION_HEADER)
+    if report_end < report_start:
+        report_end = len(entry)
+    report_markdown = entry[report_start:report_end].strip()
+    return calculated, report_markdown
 
 
 def _build_leverage_status_block(

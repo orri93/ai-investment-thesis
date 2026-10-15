@@ -7,6 +7,7 @@ Set-Location $PSScriptRoot
 # Set environment variables
 # Replace 'your_openai_api_key' with your actual OpenAI API key
 $env:OPENAI_API_KEY = "your_openai_api_key"
+$env:OPENAI_MODEL = "gpt-6.1-sol"
 
 # Replace 'your-email@example.com' with your actual email address
 $env:SEC_USER_AGENT = "ai-investment-thesis/1.0 your-email@example.com"

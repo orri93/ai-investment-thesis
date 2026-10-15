@@ -6,8 +6,10 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from filing_text import ExhibitText
 from openai_evaluator import EvaluationInput, OpenAIEvaluatorError, OpenAIThesisEvaluator
 from sec_filings import SUPPORTED_FORMS, FilingRecord, SecEdgarError, SecFilingsClient
+from status_file import extract_leverage_block, insert_leverage_block, remove_leverage_blocks
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -26,6 +28,10 @@ FORM_INSTRUCTION_FILES = {
 PROCESSED_MARKER_TEMPLATE = "<!-- processed-sec-filing:{accession} -->"
 EVALUATION_LOG_HEADER = "## Evaluation Log"
 STATUS_SOURCE_MARKER_TEMPLATE = "<!-- status-source-accession:{accession} -->"
+# 8-K cover pages rarely contain the news itself; it lives in exhibits such as EX-99.1.
+EXHIBIT_FORMS = ("8-K",)
+EXHIBIT_TYPE_PREFIXES = ("EX-99",)
+MAX_EXHIBITS_PER_FILING = 3
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,11 +151,9 @@ def main() -> int:
             )
             if not new_filings:
                 print("- No new filings to process")
-                print()
                 skipped_count += 1
-                continue
-
-            print(f"- New filings available: {len(new_filings)}")
+            else:
+                print(f"- New filings available: {len(new_filings)}")
 
             for filing in new_filings:
                 print(
@@ -166,6 +170,7 @@ def main() -> int:
                     ticker,
                     accession_number=filing.accession_number,
                 )
+                exhibits = _fetch_exhibit_texts(sec_client, filing)
 
                 evaluation = evaluator.evaluate(
                     EvaluationInput(
@@ -177,6 +182,7 @@ def main() -> int:
                         instruction_text=instruction_text,
                         thesis_text=thesis_text,
                         filing_text=filing_doc.text,
+                        exhibits=exhibits,
                     )
                 )
 
@@ -188,6 +194,7 @@ def main() -> int:
                 print(f"    {first_line}")
                 processed_count += 1
 
+            # Always sync: the status may be stale if an earlier run failed after logging.
             status_path = status_dir / thesis_path.name
             status_updated = _update_status_file_if_needed(
                 ticker=ticker,
@@ -199,7 +206,7 @@ def main() -> int:
             if status_updated:
                 print(f"- Status updated: {status_path.name}")
             else:
-                print("- Status unchanged (no newer relevant filing)")
+                print("- Status unchanged (already reflects latest relevant filing)")
 
             print()
         except (SecEdgarError, OpenAIEvaluatorError, ValueError, FileNotFoundError) as exc:
@@ -240,6 +247,35 @@ def _ticker_from_thesis_path(thesis_path: Path) -> str:
     if not ticker:
         raise ValueError(f"Could not derive ticker from thesis file name: {thesis_path}")
     return ticker
+
+
+def _fetch_exhibit_texts(
+    sec_client: SecFilingsClient,
+    filing: FilingRecord,
+) -> tuple[ExhibitText, ...]:
+    if filing.form not in EXHIBIT_FORMS:
+        return ()
+    try:
+        exhibits = sec_client.fetch_exhibits(
+            filing,
+            type_prefixes=EXHIBIT_TYPE_PREFIXES,
+            limit=MAX_EXHIBITS_PER_FILING,
+        )
+    except SecEdgarError as exc:
+        print(f"    Warning: could not fetch exhibits, using primary document only ({exc})")
+        return ()
+
+    if exhibits:
+        types = ", ".join(exhibit.attachment.document_type for exhibit in exhibits)
+        print(f"    Exhibits included: {types}")
+    return tuple(
+        ExhibitText(
+            document_type=exhibit.attachment.document_type,
+            description=exhibit.attachment.description,
+            raw_text=exhibit.text,
+        )
+        for exhibit in exhibits
+    )
 
 
 def _load_or_initialize_log(log_path: Path, ticker: str) -> str:
@@ -336,12 +372,16 @@ def _update_status_file_if_needed(
 
     existing_text = None
     existing_source = None
+    leverage_block = None
     if status_path.exists():
         existing_text = status_path.read_text(encoding="utf-8")
         existing_source = _extract_status_source_accession(existing_text)
+        leverage_block = extract_leverage_block(existing_text)
     if existing_source == latest["accession"]:
         return False
 
+    # The leverage block is owned by leverage-evaluator.py; keep it out of the model's
+    # hands and re-insert it unchanged after the status is regenerated.
     status_text = evaluator.render_status_markdown(
         ticker=ticker,
         filing_form=latest["form"],
@@ -349,7 +389,7 @@ def _update_status_file_if_needed(
         accession_number=latest["accession"],
         evaluation_markdown=latest["evaluation"],
         status_instruction_text=status_instruction_text,
-        previous_status_markdown=existing_text,
+        previous_status_markdown=remove_leverage_blocks(existing_text) if existing_text else None,
     )
 
     # Guard against malformed responses by enforcing the status source marker.
@@ -374,6 +414,13 @@ def _update_status_file_if_needed(
             ]
         )
 
+    status_text = remove_leverage_blocks(status_text)
+    if leverage_block:
+        merged = insert_leverage_block(status_text, leverage_block)
+        if merged is None:
+            merged = status_text.rstrip() + "\n\n" + "\n".join(leverage_block)
+        status_text = merged
+
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(status_text.rstrip() + "\n", encoding="utf-8")
     return True
@@ -384,7 +431,7 @@ def _extract_status_source_accession(status_text: str) -> str | None:
     for line in status_text.splitlines():
         stripped = line.strip()
         if stripped.startswith(prefix) and stripped.endswith("-->"):
-            return stripped[len(prefix) : -3]
+            return stripped[len(prefix) : -3].strip()
     return None
 
 

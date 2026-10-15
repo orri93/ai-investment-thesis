@@ -14,6 +14,7 @@ source ./venv/bin/activate
 # Set environment variables
 # Replace 'your_openai_api_key' with your actual OpenAI API key
 export OPENAI_API_KEY="your_openai_api_key"
+export OPENAI_MODEL="gpt-6.1-sol"
 
 # Execute the thesis generator script
 # Pass the draft thesis file path as script argument
