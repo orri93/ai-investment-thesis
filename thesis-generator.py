@@ -2,23 +2,28 @@
 Thesis Generator: A helper script to complete and improve draft investment theses.
 
 Usage:
-    python thesis_generator.py path/to/draft-thesis.md
+    python thesis-generator.py path/to/draft-thesis.md
 
 The script will:
 1. Read your draft thesis (can be incomplete, just an idea, or partially written)
-2. Load the thesis examples for formatting reference
-3. Call OpenAI to research, refine, and complete your thesis
-4. Overwrite the original file with the improved thesis
+2. Load the completed thesis examples for formatting reference
+3. Call OpenAI (with web search) to research, refine, and complete your thesis
+4. Save the original draft as <file>.bak and overwrite the file with the improved thesis
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
-from openai import OpenAI, OpenAIError
+from openai_support import create_openai_client, create_response_text
+
+# Templates and drafts are not finished theses, so they are not used as examples.
+NON_EXAMPLE_FILES = {"general-thesis.md"}
+DRAFT_SUFFIX = "-draft.md"
 
 
 class ThesisGeneratorError(Exception):
@@ -29,22 +34,19 @@ class ThesisGenerator:
     """Generates and refines investment theses using OpenAI."""
 
     def __init__(self, model: str | None = None):
-        try:
-            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        except OpenAIError as exc:
-            raise ThesisGeneratorError(f"Could not initialize OpenAI client: {exc}") from exc
+        self.client = create_openai_client(ThesisGeneratorError)
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.root_dir = Path(__file__).resolve().parent
         self.examples_dir = self.root_dir / "thesis-examples"
 
     def load_examples(self) -> dict[str, str]:
-        """Load thesis examples for formatting reference."""
+        """Load completed thesis examples for formatting reference."""
         examples = {}
         if self.examples_dir.exists():
-            for md_file in self.examples_dir.glob("*.md"):
-                if md_file.name != "general-thesis.md":  # Load concrete examples
-                    with open(md_file, "r", encoding="utf-8") as f:
-                        examples[md_file.name] = f.read()
+            for md_file in sorted(self.examples_dir.glob("*.md")):
+                if md_file.name in NON_EXAMPLE_FILES or md_file.name.endswith(DRAFT_SUFFIX):
+                    continue
+                examples[md_file.name] = md_file.read_text(encoding="utf-8")
         return examples
 
     def generate(self, draft_text: str) -> str:
@@ -93,23 +95,14 @@ class ThesisGenerator:
             "9. The output should be ready to use immediately as an investment thesis document."
         )
 
-        try:
-            response = self.client.responses.create(
-                model=self.model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-        except Exception as exc:
-            raise ThesisGeneratorError(
-                f"OpenAI thesis generation request failed: {exc}"
-            ) from exc
-
-        text = getattr(response, "output_text", "")
-        if not text or not text.strip():
-            raise ThesisGeneratorError("OpenAI thesis generation returned no text.")
-        return text.strip()
+        return create_response_text(
+            self.client,
+            model=self.model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            error_type=ThesisGeneratorError,
+            web_search=True,
+        )
 
 
 def main():
@@ -154,11 +147,13 @@ def main():
         print(f"Error: {exc}")
         sys.exit(1)
 
-    # Write the improved thesis back to the file
-    with open(thesis_path, "w", encoding="utf-8") as f:
-        f.write(improved_thesis)
+    # Keep the original draft so a poor generation never destroys the user's notes.
+    backup_path = thesis_path.with_name(thesis_path.name + ".bak")
+    shutil.copy2(thesis_path, backup_path)
 
-    print(f"✓ Thesis saved to: {thesis_path}")
+    thesis_path.write_text(improved_thesis, encoding="utf-8")
+
+    print(f"Thesis saved to: {thesis_path} (original draft backed up to {backup_path.name})")
     print("\nGenerated thesis preview (first 500 chars):\n")
     print(improved_thesis[:500] + "...\n")
 

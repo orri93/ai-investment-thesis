@@ -5,10 +5,15 @@ import os
 import re
 from dataclasses import dataclass
 
-from openai import OpenAI, OpenAIError
-
-from filing_text import ExhibitText, build_filing_excerpt
+from filing_text import ExhibitText, build_filing_excerpt, html_to_text
+from openai_support import create_openai_client, create_response_text
 from sec_filings import FilingRecord
+
+# Thresholds from instructions/leverage.md ("Practical interpretation").
+HIGH_NET_DEBT_TO_EBITDA = 3.5
+LOW_NET_DEBT_TO_EBITDA = 1.5
+HIGH_RISK_INTEREST_COVERAGE = 3.5
+LOW_RISK_INTEREST_COVERAGE = 8.0
 
 
 class OpenAIEvaluatorError(Exception):
@@ -32,18 +37,11 @@ class EvaluationInput:
     exhibits: tuple[ExhibitText, ...] = ()
 
 
-def _create_openai_client(error_type: type[Exception]) -> OpenAI:
-    try:
-        return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    except OpenAIError as exc:
-        raise error_type(f"Could not initialize OpenAI client: {exc}") from exc
-
-
 class OpenAIThesisEvaluator:
     """Runs form-specific investment thesis evaluations with OpenAI."""
 
     def __init__(self, model: str | None = None, max_filing_chars: int = 60000):
-        self.client = _create_openai_client(OpenAIEvaluatorError)
+        self.client = create_openai_client(OpenAIEvaluatorError)
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.max_filing_chars = max_filing_chars
 
@@ -106,6 +104,7 @@ class OpenAIThesisEvaluator:
         accession_number: str,
         evaluation_markdown: str,
         status_instruction_text: str,
+        updated_on: str,
         previous_status_markdown: str | None = None,
     ) -> str:
         system_prompt = (
@@ -115,7 +114,8 @@ class OpenAIThesisEvaluator:
 
         user_prompt = (
             f"Ticker: {ticker}\n"
-            f"Source filing: {filing_form} ({filing_date}) - {accession_number}\n\n"
+            f"Source filing: {filing_form} ({filing_date}) - {accession_number}\n"
+            f"Updated on (today's date): {updated_on}\n\n"
             "Status instructions:\n"
             f"{status_instruction_text}\n\n"
             "Input SEC evaluation markdown (already generated):\n"
@@ -126,7 +126,8 @@ class OpenAIThesisEvaluator:
             "1) Return markdown only; no code fences.\n"
             "2) Return a complete status file document, not a partial patch.\n"
             "3) Use this source accession exactly in marker and metadata.\n"
-            "4) Keep claims consistent with the provided SEC evaluation text."
+            "4) Use the given 'Updated on' date exactly.\n"
+            "5) Keep claims consistent with the provided SEC evaluation text."
         )
 
         try:
@@ -159,13 +160,15 @@ class LeverageMetrics:
     period_end: str | None = None
     currency: str | None = None
     fixed_cost_notes: str | None = None
+    # Months covered by the EBITDA/EBIT/interest figures (3 for a quarter, 12 for a year).
+    flow_period_months: int | None = None
 
 
 class OpenAILeverageEvaluator:
     """Extracts leverage inputs and generates leverage reports from SEC filings."""
 
     def __init__(self, model: str | None = None, max_filing_chars: int = 90000):
-        self.client = _create_openai_client(OpenAILeverageError)
+        self.client = create_openai_client(OpenAILeverageError)
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
         self.max_filing_chars = max_filing_chars
 
@@ -204,7 +207,7 @@ class OpenAILeverageEvaluator:
                 extraction_raw = retry_raw
                 metrics = retry_metrics
 
-        calculated = self._calculate_ratios(metrics)
+        calculated = self._calculate_ratios(metrics, form=filing.form)
         report = self._generate_report(
             ticker=ticker,
             filing=filing,
@@ -239,12 +242,16 @@ class OpenAILeverageEvaluator:
             "If debt is split across current and long-term portions, combine them for total_debt.\n"
             "If net debt is not explicit, infer as total debt minus cash and equivalents when available; otherwise null.\n"
             "For EBITDA, use reported EBITDA if present; otherwise keep null (do not fabricate).\n"
-            "Interest expense should be the financing cost line item for the latest comparable period.\n\n"
+            "Interest expense should be the financing cost line item for the latest comparable period, "
+            "reported as a positive number.\n"
+            "Set flow_period_months to the number of months covered by the EBITDA, EBIT and interest "
+            "expense values (3 for a single quarter, 6 or 9 for year-to-date, 12 for a full year).\n\n"
             "Return ONLY valid JSON with this schema:\n"
             "{\n"
             '  "company_name": string|null,\n'
             '  "period_end": string|null,\n'
             '  "currency": string|null,\n'
+            '  "flow_period_months": number|null,\n'
             '  "values": {\n'
             '    "total_debt": number|null,\n'
             '    "shareholders_equity": number|null,\n'
@@ -268,14 +275,15 @@ class OpenAILeverageEvaluator:
             f"{filing_excerpt}"
         )
 
-        response = self._create_response_with_optional_web_search(
+        # Values must come from the filing itself, so web search is disabled here.
+        return create_response_text(
+            self.client,
+            model=self.model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            error_type=OpenAILeverageError,
+            web_search=False,
         )
-        text = getattr(response, "output_text", "")
-        if not text or not text.strip():
-            raise OpenAILeverageError("OpenAI extraction returned no text.")
-        return text.strip()
 
     def _generate_report(
         self,
@@ -291,6 +299,7 @@ class OpenAILeverageEvaluator:
             "You are an investment risk analyst specializing in leverage diagnostics. "
             "Produce concise, factual markdown."
         )
+        category = leverage_category(calculated)
 
         user_prompt = (
             f"Ticker: {ticker}\n"
@@ -302,8 +311,9 @@ class OpenAILeverageEvaluator:
             f"{instruction_text}\n\n"
             "Extracted values (from filing extraction):\n"
             f"{json.dumps(_metrics_to_dict(metrics), indent=2)}\n\n"
-            "Calculated leverage ratios:\n"
+            "Calculated leverage ratios (Net Debt / EBITDA uses annualized EBITDA):\n"
             f"{json.dumps(calculated, indent=2)}\n\n"
+            f"Rule-based leverage category from these ratios: {category}\n\n"
             "Raw extraction JSON:\n"
             f"{extraction_raw}\n\n"
             "Output requirements:\n"
@@ -311,41 +321,20 @@ class OpenAILeverageEvaluator:
             "2) Include sections matching the leverage framework (company-level, investment leverage, "
             "operating vs financial leverage, portfolio perspective, practical interpretation, limitations).\n"
             "3) Reference the key numeric values and calculated ratios in the narrative.\n"
-            "4) Add a short final verdict line with leverage category: Low, Moderate, or High.\n"
+            "4) End with a final line formatted exactly as 'Verdict: <Low|Moderate|High> - <short reason>'. "
+            "Use the rule-based category unless the extracted data clearly shows it is misleading; if you "
+            "deviate (or it is Unknown), state why in one sentence.\n"
             "5) Keep report practical and concise (roughly 6-12 short paragraphs)."
         )
 
-        response = self._create_response_with_optional_web_search(
+        return create_response_text(
+            self.client,
+            model=self.model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            error_type=OpenAILeverageError,
+            web_search=True,
         )
-        text = getattr(response, "output_text", "")
-        if not text or not text.strip():
-            raise OpenAILeverageError("OpenAI report generation returned no text.")
-        return text.strip()
-
-    def _create_response_with_optional_web_search(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-    ):
-        payload = {
-            "model": self.model,
-            "input": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "tools": [{"type": "web_search_preview"}],
-        }
-        try:
-            return self.client.responses.create(**payload)
-        except Exception:
-            payload.pop("tools", None)
-            try:
-                return self.client.responses.create(**payload)
-            except Exception as exc:
-                raise OpenAILeverageError(f"OpenAI request failed: {exc}") from exc
 
     def _parse_metrics(self, extraction_raw: str) -> LeverageMetrics:
         parsed_json = _extract_json_object(extraction_raw)
@@ -396,6 +385,9 @@ class OpenAILeverageEvaluator:
             if total_debt is not None and cash_equivalents is not None:
                 net_debt = total_debt - cash_equivalents
 
+        months = _extract_numeric(payload, values, "flow_period_months", "period_months")
+        flow_period_months = int(round(months)) if months is not None and 1 <= months <= 12 else None
+
         return LeverageMetrics(
             total_debt=total_debt,
             shareholders_equity=shareholders_equity,
@@ -414,31 +406,20 @@ class OpenAILeverageEvaluator:
                 "operating_leverage_notes",
                 "notes",
             ),
+            flow_period_months=flow_period_months,
         )
 
-    def _calculate_ratios(self, metrics: LeverageMetrics) -> dict[str, float | None]:
-        debt_to_equity = _safe_div(metrics.total_debt, metrics.shareholders_equity)
-        debt_to_assets = _safe_div(metrics.total_debt, metrics.total_assets)
-        net_debt_to_ebitda = _safe_div(metrics.net_debt, metrics.ebitda)
-        interest_coverage = _safe_div(metrics.ebit, metrics.interest_expense)
-
-        return {
-            "debt_to_equity": debt_to_equity,
-            "debt_to_assets": debt_to_assets,
-            "net_debt_to_ebitda": net_debt_to_ebitda,
-            "interest_coverage": interest_coverage,
-        }
+    def _calculate_ratios(
+        self,
+        metrics: LeverageMetrics,
+        *,
+        form: str,
+    ) -> dict[str, float | None]:
+        return calculate_leverage_ratios(metrics, form=form)
 
     def _prepare_filing_text(self, filing_text: str, *, retry_mode: bool = False) -> str:
-        # Convert filing HTML/text to line-preserving plain text so statement labels survive.
-        text = filing_text
-        text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
-        text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
-        text = re.sub(r"(?i)</?(br|p|div|tr|li|h1|h2|h3|h4|h5|h6|table|section)[^>]*>", "\n", text)
-        text = re.sub(r"<[^>]+>", " ", text)
-
-        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-        lines = [line for line in lines if line]
+        # Line-preserving plain text (no XBRL header, decoded entities) so statement labels survive.
+        lines = html_to_text(filing_text).splitlines()
         if not lines:
             normalized = re.sub(r"\s+", " ", filing_text).strip()
             return normalized[: self.max_filing_chars]
@@ -600,6 +581,52 @@ def _safe_div(numerator: float | None, denominator: float | None) -> float | Non
     return numerator / denominator
 
 
+def calculate_leverage_ratios(metrics: LeverageMetrics, *, form: str) -> dict[str, float | None]:
+    """Compute leverage ratios, annualizing interim EBITDA and guarding sign issues."""
+    months = metrics.flow_period_months or (12 if form.upper().startswith("10-K") else 3)
+    annualized_ebitda = (
+        metrics.ebitda * 12.0 / months if metrics.ebitda is not None else None
+    )
+
+    # Net Debt / EBITDA is meaningless when EBITDA is zero or negative.
+    net_debt_to_ebitda = (
+        _safe_div(metrics.net_debt, annualized_ebitda)
+        if annualized_ebitda is not None and annualized_ebitda > 0
+        else None
+    )
+    # Filings and extractions differ on the sign of interest expense; coverage uses its size.
+    interest_expense = abs(metrics.interest_expense) if metrics.interest_expense is not None else None
+
+    return {
+        "debt_to_equity": _safe_div(metrics.total_debt, metrics.shareholders_equity),
+        "debt_to_assets": _safe_div(metrics.total_debt, metrics.total_assets),
+        "net_debt_to_ebitda": net_debt_to_ebitda,
+        "interest_coverage": _safe_div(metrics.ebit, interest_expense),
+        "ebitda_annualized": annualized_ebitda,
+        "flow_period_months": float(months),
+    }
+
+
+def leverage_category(calculated: dict[str, float | None]) -> str:
+    """Classify leverage from the available ratios (High wins; Low needs every available ratio low)."""
+    nd_to_ebitda = calculated.get("net_debt_to_ebitda")
+    coverage = calculated.get("interest_coverage")
+    if nd_to_ebitda is None and coverage is None:
+        return "Unknown"
+
+    if (nd_to_ebitda is not None and nd_to_ebitda > HIGH_NET_DEBT_TO_EBITDA) or (
+        coverage is not None and coverage < HIGH_RISK_INTEREST_COVERAGE
+    ):
+        return "High"
+
+    low_by_nd = nd_to_ebitda is None or nd_to_ebitda < LOW_NET_DEBT_TO_EBITDA
+    low_by_ic = coverage is None or coverage > LOW_RISK_INTEREST_COVERAGE
+    if low_by_nd and low_by_ic:
+        return "Low"
+
+    return "Moderate"
+
+
 def _normalize_metric_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
@@ -633,6 +660,7 @@ def _metrics_to_dict(metrics: LeverageMetrics) -> dict[str, object]:
         "company_name": metrics.company_name,
         "period_end": metrics.period_end,
         "currency": metrics.currency,
+        "flow_period_months": metrics.flow_period_months,
         "values": {
             "total_debt": metrics.total_debt,
             "shareholders_equity": metrics.shareholders_equity,

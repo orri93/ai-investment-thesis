@@ -213,3 +213,6 @@ generate.ps1
 generate.sh
 leverage-evaluate.ps1
 leverage-evaluate.sh
+
+# Draft backups written by thesis-generator.py
+*.md.bak

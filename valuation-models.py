@@ -8,9 +8,10 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI, OpenAIError
+from openai import OpenAI
 
 from filing_text import build_filing_excerpt
+from openai_support import create_openai_client, create_response_text
 from sec_filings import FilingRecord, SecEdgarError, SecFilingsClient
 
 
@@ -29,6 +30,13 @@ INSTRUCTION_FILES = {
 DEFAULT_10K_YEARS = 7
 DEFAULT_10Q_QUARTERS = 5
 DEFAULT_8K_MONTHS = 24
+MAX_QUALITATIVE_8KS = 5
+MARKET_DATA_NOTE = (
+    "Use the SEC data above for all company financials. Use web search to obtain the market "
+    "inputs the filings do not contain and the WACC needs (current share price and market "
+    "capitalization, risk-free rate, beta, equity risk premium); state each such input with "
+    "its source and date. Do not use web search for company financials."
+)
 
 
 class ValuationError(Exception):
@@ -106,9 +114,9 @@ def main() -> int:
     try:
         instructions = _load_instructions(instructions_dir)
         sec_client = SecFilingsClient()
-        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        openai_client = create_openai_client(ValuationError)
         model = args.openai_model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-    except (SecEdgarError, OpenAIError, FileNotFoundError, ValueError) as exc:
+    except (SecEdgarError, ValuationError, FileNotFoundError, ValueError) as exc:
         print(f"Startup error: {exc}", file=sys.stderr)
         return 1
 
@@ -364,7 +372,7 @@ def _step_extract_financials(
         )
 
         try:
-            response = _call_openai(client, model, system_prompt, user_prompt)
+            response = _call_openai(client, model, system_prompt, user_prompt, web_search=False)
             extraction_json = _extract_json_from_response(response)
             extraction = json.loads(extraction_json)
             extraction["_filing_form"] = filing_info["form"]
@@ -394,7 +402,8 @@ def _step_valuation_models(
     """Build DCF, normalized earnings, unit economics, and scenario analyses."""
     system_prompt = (
         "You are a senior equity analyst building rigorous valuation models. "
-        "Use only the provided financial data. Produce structured markdown output."
+        "Use only the provided SEC financial data for company financials; use web search "
+        "solely for current market inputs. Produce structured markdown output."
     )
 
     extractions_summary = json.dumps(extractions, indent=2, default=str)
@@ -407,10 +416,11 @@ def _step_valuation_models(
         f"Valuation model instructions:\n{instruction_text}\n\n"
         f"Structured financial extractions from SEC filings:\n{extractions_summary}\n\n"
         "Build the valuation models as specified in the instructions. "
-        "Use the multi-period data to establish trends and make projections."
+        "Use the multi-period data to establish trends and make projections.\n"
+        f"{MARKET_DATA_NOTE}"
     )
 
-    return _call_openai(client, model, system_prompt, user_prompt)
+    return _call_openai(client, model, system_prompt, user_prompt, web_search=True)
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +462,7 @@ def _step_qualitative_drivers(
         "Assess the qualitative value drivers as specified in the instructions."
     )
 
-    return _call_openai(client, model, system_prompt, user_prompt)
+    return _call_openai(client, model, system_prompt, user_prompt, web_search=False)
 
 
 def _build_qualitative_context(
@@ -472,9 +482,9 @@ def _build_qualitative_context(
         budget -= len(parts[-1])
 
     # Recent 8-Ks for event-driven qualitative information
-    eight_ks = [f for f in filing_texts if f["form"] == "8-K"]
+    eight_ks = [f for f in filing_texts if f["form"] == "8-K"][:MAX_QUALITATIVE_8KS]
     per_8k_budget = min(8000, budget // max(len(eight_ks), 1))
-    for filing_info in eight_ks[:5]:
+    for filing_info in eight_ks:
         if budget <= 0:
             break
         excerpt = filing_info["text"][:per_8k_budget]
@@ -518,10 +528,11 @@ def _step_valuation_impact(
         f"Qualitative assessment:\n{qualitative[:20000]}\n\n"
         f"Structured financial extractions:\n{extractions_summary}\n\n"
         "Connect the filings to valuation impact as specified in the instructions. "
-        "Reason about margin compression, debt changes, dilution, and other material factors."
+        "Reason about margin compression, debt changes, dilution, and other material factors.\n"
+        f"{MARKET_DATA_NOTE}"
     )
 
-    return _call_openai(client, model, system_prompt, user_prompt)
+    return _call_openai(client, model, system_prompt, user_prompt, web_search=True)
 
 
 # ---------------------------------------------------------------------------
@@ -529,30 +540,23 @@ def _step_valuation_impact(
 # ---------------------------------------------------------------------------
 
 
-def _call_openai(client: OpenAI, model: str, system_prompt: str, user_prompt: str) -> str:
-    """Call OpenAI API with optional web search fallback."""
-    payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "tools": [{"type": "web_search_preview"}],
-    }
-    try:
-        response = client.responses.create(**payload)
-    except Exception:
-        # Retry without web search tool
-        payload.pop("tools", None)
-        try:
-            response = client.responses.create(**payload)
-        except Exception as exc:
-            raise ValuationError(f"OpenAI request failed: {exc}") from exc
-
-    text = getattr(response, "output_text", "")
-    if not text or not text.strip():
-        raise ValuationError("OpenAI returned no text.")
-    return text.strip()
+def _call_openai(
+    client: OpenAI,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    web_search: bool = False,
+) -> str:
+    """Call the OpenAI Responses API; web search only where outside data is needed."""
+    return create_response_text(
+        client,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        error_type=ValuationError,
+        web_search=web_search,
+    )
 
 
 def _extract_json_from_response(text: str) -> str:

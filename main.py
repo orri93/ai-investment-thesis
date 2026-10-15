@@ -26,8 +26,23 @@ FORM_INSTRUCTION_FILES = {
 }
 
 PROCESSED_MARKER_TEMPLATE = "<!-- processed-sec-filing:{accession} -->"
+PROCESSED_MARKER_PREFIX = "<!-- processed-sec-filing:"
 EVALUATION_LOG_HEADER = "## Evaluation Log"
 STATUS_SOURCE_MARKER_TEMPLATE = "<!-- status-source-accession:{accession} -->"
+STATUS_SOURCE_MARKER_RE = re.compile(r"^\s*<!--\s*status-source-accession:.*?-->\s*$", re.MULTILINE)
+UPDATED_ON_RE = re.compile(r"^(\s*[-*]\s*Updated on:).*$", re.MULTILINE | re.IGNORECASE)
+VERDICT_LINE_RE = re.compile(r"^\s*[-*]\s*Verdict:", re.MULTILINE | re.IGNORECASE)
+ALLOWED_VERDICTS = ("No Action", "Add", "Hold", "Trim", "Exit", "Watch", "Reduce", "Maintain")
+VERDICT_STATUS_COLORS = {
+    "Add": "Green",
+    "Hold": "Green",
+    "Maintain": "Green",
+    "No Action": "Green",
+    "Watch": "Yellow",
+    "Trim": "Yellow",
+    "Reduce": "Yellow",
+    "Exit": "Red",
+}
 # 8-K cover pages rarely contain the news itself; it lives in exhibits such as EX-99.1.
 EXHIBIT_FORMS = ("8-K",)
 EXHIBIT_TYPE_PREFIXES = ("EX-99",)
@@ -55,7 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--filings-limit",
         type=int,
         default=25,
-        help="Max recent SEC filings to scan per thesis ticker. Default: 25",
+        help=(
+            "Minimum number of recent SEC filings to scan per thesis ticker. On later runs the "
+            "scan continues past this limit until it reaches a filing already in the log, so a "
+            "backlog is never skipped. Filings before the thesis purchase date are always "
+            "excluded. Default: 25"
+        ),
     )
     parser.add_argument(
         "--openai-model",
@@ -122,20 +142,16 @@ def main() -> int:
             if purchase_date:
                 print(f"- Position purchase date: {purchase_date} (filtering earlier filings)")
 
-            filings = sec_client.list_filings(
+            filings = _collect_filings_to_scan(
+                sec_client,
                 ticker,
-                forms=SUPPORTED_FORMS,
-                include_amendments=False,
-                limit=args.filings_limit,
+                log_text=log_text,
+                purchase_date=purchase_date,
+                filings_limit=args.filings_limit,
             )
-            print(f"- SEC filings discovered: {len(filings)}")
-
-            if purchase_date:
-                filings = [
-                    f for f in filings
-                    if _filing_date_as_date(f.filing_date) >= purchase_date
-                ]
-                print(f"- SEC filings after purchase date: {len(filings)}")
+            print(f"- SEC filings scanned: {len(filings)}")
+            if len(filings) > args.filings_limit:
+                print("  (scan extended past --filings-limit to catch up with the log)")
 
             new_filings = [
                 filing
@@ -294,6 +310,33 @@ def _already_processed(log_text: str, accession_number: str) -> bool:
     return marker in log_text
 
 
+def _collect_filings_to_scan(
+    sec_client: SecFilingsClient,
+    ticker: str,
+    *,
+    log_text: str,
+    purchase_date: date | None,
+    filings_limit: int,
+) -> list[FilingRecord]:
+    """Return filings newest-first, bounded by the purchase date and the scan limit.
+
+    The limit bounds the first run. Once the log has entries, the scan continues past
+    the limit until it reaches an already-processed filing, so a backlog larger than
+    the limit is not silently dropped.
+    """
+    has_history = PROCESSED_MARKER_PREFIX in log_text
+    scanned: list[FilingRecord] = []
+    for filing in sec_client.iter_filings(ticker, forms=SUPPORTED_FORMS, include_amendments=False):
+        if purchase_date and _filing_date_as_date(filing.filing_date) < purchase_date:
+            break
+        if len(scanned) >= filings_limit and (
+            not has_history or _already_processed(log_text, filing.accession_number)
+        ):
+            break
+        scanned.append(filing)
+    return scanned
+
+
 def _append_evaluation_log_entry(
     log_text: str,
     filing: FilingRecord,
@@ -382,6 +425,7 @@ def _update_status_file_if_needed(
 
     # The leverage block is owned by leverage-evaluator.py; keep it out of the model's
     # hands and re-insert it unchanged after the status is regenerated.
+    updated_on = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     status_text = evaluator.render_status_markdown(
         ticker=ticker,
         filing_form=latest["form"],
@@ -389,30 +433,17 @@ def _update_status_file_if_needed(
         accession_number=latest["accession"],
         evaluation_markdown=latest["evaluation"],
         status_instruction_text=status_instruction_text,
+        updated_on=updated_on,
         previous_status_markdown=remove_leverage_blocks(existing_text) if existing_text else None,
     )
 
-    # Guard against malformed responses by enforcing the status source marker.
-    required_marker = STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["accession"])
-    if required_marker not in status_text:
-        status_text = "\n".join(
-            [
-                f"# {ticker} Thesis Status",
-                "",
-                required_marker,
-                f"- Source filing: {latest['form']} ({latest['filing_date']}) - {latest['accession']}",
-                f"- Updated on: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
-                "- Overall status: Yellow",
-                "- Verdict: Watch",
-                "- Thesis validity: Intact",
-                "",
-                "## Parts",
-                "- Filing impact: Yellow",
-                "",
-                "## Latest assessment",
-                f"- {_first_content_line(latest['evaluation'])}",
-            ]
+    if VERDICT_LINE_RE.search(status_text):
+        status_text = _enforce_status_metadata(
+            status_text, ticker=ticker, latest=latest, updated_on=updated_on
         )
+    else:
+        # Not a usable status document; build one from the evaluation's own verdict.
+        status_text = _fallback_status_text(ticker=ticker, latest=latest, updated_on=updated_on)
 
     status_text = remove_leverage_blocks(status_text)
     if leverage_block:
@@ -424,6 +455,69 @@ def _update_status_file_if_needed(
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(status_text.rstrip() + "\n", encoding="utf-8")
     return True
+
+
+def _enforce_status_metadata(
+    status_text: str,
+    *,
+    ticker: str,
+    latest: dict[str, str],
+    updated_on: str,
+) -> str:
+    """Make the source marker and 'Updated on' date authoritative, whatever the model wrote."""
+    marker = STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["accession"])
+    lines = STATUS_SOURCE_MARKER_RE.sub("", status_text).splitlines()
+
+    heading_idx = next((i for i, line in enumerate(lines) if line.startswith("# ")), None)
+    if heading_idx is None:
+        lines = [f"# {ticker} Thesis Status", ""] + lines
+        heading_idx = 0
+    # Drop blank lines left where the old marker was, then re-insert below the heading.
+    insert_at = heading_idx + 1
+    while insert_at < len(lines) and not lines[insert_at].strip():
+        lines.pop(insert_at)
+    lines[insert_at:insert_at] = ["", marker]
+
+    text = "\n".join(lines)
+    updated_line = f"- Updated on: {updated_on}"
+    if UPDATED_ON_RE.search(text):
+        return UPDATED_ON_RE.sub(lambda m: f"{m.group(1)} {updated_on}", text, count=1)
+
+    lines = text.splitlines()
+    source_idx = next(
+        (i for i, line in enumerate(lines) if line.strip().lower().startswith("- source filing:")),
+        lines.index(marker),
+    )
+    lines.insert(source_idx + 1, updated_line)
+    return "\n".join(lines)
+
+
+def _fallback_status_text(*, ticker: str, latest: dict[str, str], updated_on: str) -> str:
+    verdict = _extract_verdict(latest["evaluation"])
+    overall = VERDICT_STATUS_COLORS.get(verdict or "", "Unknown")
+    if verdict is None:
+        validity = "Unknown"
+    else:
+        validity = "Broken" if verdict == "Exit" else "Intact"
+    return "\n".join(
+        [
+            f"# {ticker} Thesis Status",
+            "",
+            STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["accession"]),
+            f"- Source filing: {latest['form']} ({latest['filing_date']}) - {latest['accession']}",
+            f"- Updated on: {updated_on}",
+            f"- Overall status: {overall}",
+            f"- Verdict: {verdict or 'Unknown'}",
+            f"- Thesis validity: {validity}",
+            "- Note: status rendering failed; derived from the evaluation's verdict. See the log entry.",
+            "",
+            "## Parts",
+            f"- Filing impact: {overall}",
+            "",
+            "## Latest assessment",
+            f"- {_first_content_line(latest['evaluation'])}",
+        ]
+    )
 
 
 def _extract_status_source_accession(status_text: str) -> str | None:
@@ -498,21 +592,26 @@ def _entry_is_relevant_for_status(entry: dict[str, str]) -> bool:
         return True
 
     verdict = _extract_verdict(entry["evaluation"])
-    if verdict and verdict.upper() != "NO ACTION":
+    if verdict and verdict != "No Action":
         return True
 
     return not _is_non_impactful_8k_language(entry["evaluation"])
 
 
 def _extract_verdict(text: str) -> str | None:
+    """Return the first allowed verdict (e.g. 'Watch') found on a 'Verdict:' line."""
+    pattern = re.compile(
+        r"^(" + "|".join(v.lower() for v in ALLOWED_VERDICTS) + r")\b"
+    )
     for line in text.splitlines():
         if "verdict" not in line.lower() or ":" not in line:
             continue
         _, right = line.split(":", 1)
         cleaned = re.sub(r"[^A-Za-z ]", " ", right)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        if cleaned:
-            return cleaned.title()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+        match = pattern.match(cleaned)
+        if match:
+            return next(v for v in ALLOWED_VERDICTS if v.lower() == match.group(1))
     return None
 
 

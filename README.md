@@ -117,7 +117,7 @@ At a high level, the workflow is:
 
 1. `main.py` scans all markdown files in [thesis](thesis).
 2. The ticker is derived from the thesis file name, so `amzn.md` maps to `AMZN`, `nvda.md` maps to `NVDA`, and so on.
-3. For every thesis, the script uses [sec_filings.py](sec_filings.py) to look up the company on SEC EDGAR and retrieve recent `10-K`, `10-Q`, and `8-K` filings.
+3. For every thesis, the script uses [sec_filings.py](sec_filings.py) to look up the company on SEC EDGAR and retrieve recent `10-K`, `10-Q`, and `8-K` filings, newest first. Filings dated before the thesis `Purchased:` date are skipped. The first run scans `--filings-limit` filings (default 25); later runs keep scanning past that limit until they reach a filing already in the log, so a backlog is never skipped.
 4. The script writes and reads evaluation logs in same-named files under [log](log), for example `thesis/amzn.md` -> `log/amzn.md`.
 5. Only filings that do not already have a processed marker are treated as new filings.
 6. For each new filing, the script loads the corresponding review instructions from [instructions/10-k.md](instructions/10-k.md), [instructions/10-q.md](instructions/10-q.md), or [instructions/8-k.md](instructions/8-k.md).
@@ -243,9 +243,9 @@ To keep credentials private, copy and edit the example script first:
 
 The script will:
 1. Read your draft (can be incomplete, just an idea, or partially written)
-2. Use OpenAI to research the company online if needed
-3. Refine and complete your thesis with proper structure
-4. Return a professional, investment-ready thesis document
+2. Use OpenAI with web search to research the company
+3. Refine and complete your thesis with proper structure, using the completed examples in [thesis-examples](thesis-examples) (drafts and the generic template are not used as examples)
+4. Save your original draft as `<file>.md.bak` and overwrite the file with the completed thesis
 
 **Note:** Ensure `OPENAI_API_KEY` is set before running.
 
@@ -274,7 +274,7 @@ Steps for manual thesis creation:
 # Ensure OPENAI_API_KEY and SEC_USER_AGENT are set first
 python main.py
 
-# Limit the filing scan depth per thesis
+# Scan depth for the first run per thesis (later runs catch up with the log automatically)
 python main.py --filings-limit 10
 
 # Override the OpenAI model for this run
@@ -326,3 +326,4 @@ To keep credentials private, copy and edit the example script first:
 - Each entry references the SEC filing URL, filing accession number, and processing date.
 - Reprocessing is prevented with a processed marker (`processed-leverage-filing:<accession>`), so the same filing is not evaluated again.
 - If an existing `status/<ticker>.md` file is missing the leverage block for the latest processed filing, it is restored from the leverage log without calling OpenAI. `main.py` preserves this block when it regenerates a status file.
+- Values are extracted from the filing only (no web search). For `10-Q` filings, EBITDA is annualized before computing Net Debt / EBITDA. The rule-based category uses the thresholds in [instructions/leverage.md](instructions/leverage.md): High if any available ratio is in the high range, Low only if every available ratio is in the low range. The report's verdict is asked to follow it.

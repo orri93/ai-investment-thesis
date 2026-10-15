@@ -7,7 +7,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from openai_evaluator import LeverageMetrics, OpenAILeverageError, OpenAILeverageEvaluator
+from openai_evaluator import (
+    LeverageMetrics,
+    OpenAILeverageError,
+    OpenAILeverageEvaluator,
+    leverage_category,
+)
 
 from sec_filings import FilingRecord, SecEdgarError, SecFilingsClient
 from status_file import (
@@ -324,6 +329,7 @@ def _format_extracted_values(metrics: LeverageMetrics) -> str:
         ("EBITDA", _fmt_number(metrics.ebitda)),
         ("EBIT", _fmt_number(metrics.ebit)),
         ("Interest Expense", _fmt_number(metrics.interest_expense)),
+        ("Flow Period (months)", metrics.flow_period_months),
         ("Fixed Cost Notes", metrics.fixed_cost_notes),
     ]
 
@@ -341,11 +347,12 @@ def _format_extracted_values(metrics: LeverageMetrics) -> str:
 def _format_ratio_values(calculated: dict[str, float | None]) -> str:
     nd_to_ebitda = calculated.get("net_debt_to_ebitda")
     interest_coverage = calculated.get("interest_coverage")
-    category = _leverage_category(nd_to_ebitda, interest_coverage)
+    category = leverage_category(calculated)
 
     rows = [
         ("Debt-to-Equity", _fmt_ratio(calculated.get("debt_to_equity"))),
         ("Debt-to-Assets", _fmt_ratio(calculated.get("debt_to_assets"))),
+        ("EBITDA (annualized)", _fmt_number(calculated.get("ebitda_annualized"))),
         ("Net Debt / EBITDA", _fmt_ratio(nd_to_ebitda)),
         ("Interest Coverage (EBIT / Interest Expense)", _fmt_ratio(interest_coverage)),
         ("Category (rule-based)", category),
@@ -399,26 +406,6 @@ def _escape_table(value: object) -> str:
     if value is None:
         return "N/A"
     return str(value).replace("|", "\\|")
-
-
-def _leverage_category(
-    net_debt_to_ebitda: float | None,
-    interest_coverage: float | None,
-) -> str:
-    if net_debt_to_ebitda is None and interest_coverage is None:
-        return "Unknown"
-
-    high_by_nd = net_debt_to_ebitda is not None and net_debt_to_ebitda > 3.5
-    high_by_ic = interest_coverage is not None and interest_coverage < 3.5
-    if high_by_nd or high_by_ic:
-        return "High"
-
-    low_by_nd = net_debt_to_ebitda is not None and net_debt_to_ebitda < 1.5
-    low_by_ic = interest_coverage is not None and interest_coverage > 8.0
-    if low_by_nd and low_by_ic:
-        return "Low"
-
-    return "Moderate"
 
 
 def _append_leverage_to_existing_status(
@@ -535,7 +522,7 @@ def _build_leverage_status_block(
     interest_coverage = calculated.get("interest_coverage")
     debt_to_equity = calculated.get("debt_to_equity")
     debt_to_assets = calculated.get("debt_to_assets")
-    category = _leverage_category(nd_to_ebitda, interest_coverage)
+    category = leverage_category(calculated)
 
     verdict = _extract_verdict(report_markdown)
     summary = _first_content_line(report_markdown)
@@ -557,8 +544,10 @@ def _build_leverage_status_block(
 
 
 def _extract_verdict(text: str) -> str:
-    for line in text.splitlines():
-        if "verdict" in line.lower():
+    # The verdict is the report's final line, so search from the end.
+    for line in reversed(text.splitlines()):
+        lowered = line.lower()
+        if "verdict" in lowered or "leverage category:" in lowered:
             cleaned = line.strip()
             cleaned = re.sub(r"^#+\s*", "", cleaned)
             cleaned = cleaned.replace("*", "").replace("_", "")
