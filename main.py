@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from datetime import date, datetime, timezone
@@ -10,6 +11,13 @@ from filing_text import ExhibitText
 from openai_evaluator import EvaluationInput, OpenAIEvaluatorError, OpenAIThesisEvaluator
 from sec_filings import SUPPORTED_FORMS, FilingRecord, SecEdgarError, SecFilingsClient
 from status_file import extract_leverage_block, insert_leverage_block, remove_leverage_blocks
+from utils import (
+    first_content_line,
+    load_environment,
+    report_unexpected_error,
+    ticker_from_thesis_path,
+    write_text_atomic,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -47,6 +55,23 @@ VERDICT_STATUS_COLORS = {
 EXHIBIT_FORMS = ("8-K",)
 EXHIBIT_TYPE_PREFIXES = ("EX-99",)
 MAX_EXHIBITS_PER_FILING = 3
+
+PERIODIC_FORMS = ("10-K", "10-Q")
+LOG_ENTRY_HEADER_RE = re.compile(
+    r"^### (SEC Filing Review|Thesis Revision Review):\s*(10-K|10-Q|8-K)\s*"
+    r"\((\d{4}-\d{2}-\d{2})\)\s*-\s*([0-9-]+)\s*$",
+    re.MULTILINE,
+)
+PROCESSED_ON_RE = re.compile(r"^- Processed on:\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+THESIS_FINGERPRINT_TEMPLATE = "<!-- thesis-sha256:{fingerprint} -->"
+THESIS_FINGERPRINT_RE = re.compile(r"<!-- thesis-sha256:([0-9a-f]{64}) -->")
+REVISION_MARKER_TEMPLATE = "<!-- thesis-revision-review:{fingerprint}:{accession} -->"
+REVISION_FINGERPRINT_RE = re.compile(r"<!-- thesis-revision-review:([0-9a-f]+):")
+REVISION_REVIEW_NOTE = (
+    "The investor revised the thesis after this filing was last reviewed. Re-evaluate the "
+    "revised thesis against this filing: state which changes the filing supports or "
+    "contradicts, and whether the verdict changes."
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,10 +117,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(STATUS_DIR),
         help=f"Path to thesis status markdown files. Default: {STATUS_DIR}",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full tracebacks for unexpected errors.",
+    )
     return parser
 
 
 def main() -> int:
+    load_environment()
     args = build_parser().parse_args()
     thesis_dir = Path(args.thesis_dir)
     instructions_dir = Path(args.instructions_dir)
@@ -127,6 +158,7 @@ def main() -> int:
     status_dir.mkdir(parents=True, exist_ok=True)
 
     processed_count = 0
+    revision_count = 0
     skipped_count = 0
     failed_count = 0
 
@@ -134,7 +166,7 @@ def main() -> int:
         print(f"Working on thesis: {thesis_path.name}")
         try:
             thesis_text = thesis_path.read_text(encoding="utf-8")
-            ticker = _ticker_from_thesis_path(thesis_path)
+            ticker = ticker_from_thesis_path(thesis_path)
             log_path = log_dir / thesis_path.name
             log_text = _load_or_initialize_log(log_path, ticker)
 
@@ -171,6 +203,7 @@ def main() -> int:
             else:
                 print(f"- New filings available: {len(new_filings)}")
 
+            periodic_reviewed = False
             for filing in new_filings:
                 print(
                     f"  - Evaluating {filing.form} filed {filing.filing_date} "
@@ -182,10 +215,7 @@ def main() -> int:
                     print(f"    Skipped: no instruction file configured for {filing.form}")
                     continue
 
-                filing_doc = sec_client.fetch_filing(
-                    ticker,
-                    accession_number=filing.accession_number,
-                )
+                filing_doc = sec_client.fetch_document(filing)
                 exhibits = _fetch_exhibit_texts(sec_client, filing)
 
                 evaluation = evaluator.evaluate(
@@ -203,12 +233,24 @@ def main() -> int:
                 )
 
                 log_text = _append_evaluation_log_entry(log_text, filing, evaluation)
-                log_path.write_text(log_text, encoding="utf-8")
+                write_text_atomic(log_path, log_text)
 
                 print("    Result summary:")
-                first_line = _first_content_line(evaluation)
-                print(f"    {first_line}")
+                print(f"    {first_content_line(evaluation)}")
                 processed_count += 1
+                periodic_reviewed = periodic_reviewed or filing.form in PERIODIC_FORMS
+
+            log_text, revised = _review_thesis_change(
+                ticker=ticker,
+                thesis_text=thesis_text,
+                log_text=log_text,
+                log_path=log_path,
+                sec_client=sec_client,
+                evaluator=evaluator,
+                instruction_texts=instruction_texts,
+                periodic_reviewed_this_run=periodic_reviewed,
+            )
+            revision_count += int(revised)
 
             # Always sync: the status may be stale if an earlier run failed after logging.
             status_path = status_dir / thesis_path.name
@@ -230,12 +272,13 @@ def main() -> int:
             print()
             failed_count += 1
         except Exception as exc:
-            print(f"- Unexpected error: {exc}", file=sys.stderr)
+            report_unexpected_error(exc, verbose=args.verbose)
             print()
             failed_count += 1
 
     print("Run complete")
     print(f"- Filings processed: {processed_count}")
+    print(f"- Thesis revision reviews: {revision_count}")
     print(f"- Theses with no new filings: {skipped_count}")
     print(f"- Theses failed: {failed_count}")
     return 0 if failed_count == 0 else 1
@@ -256,13 +299,6 @@ def _load_status_instruction_text(instructions_dir: Path) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Missing status instruction file: {path}")
     return path.read_text(encoding="utf-8").strip()
-
-
-def _ticker_from_thesis_path(thesis_path: Path) -> str:
-    ticker = thesis_path.stem.strip().upper()
-    if not ticker:
-        raise ValueError(f"Could not derive ticker from thesis file name: {thesis_path}")
-    return ticker
 
 
 def _fetch_exhibit_texts(
@@ -300,8 +336,7 @@ def _load_or_initialize_log(log_path: Path, ticker: str) -> str:
 
     # Initialize a new log from the ticker/file name, not thesis markdown headers.
     log_text = f"# {ticker}\n\n{EVALUATION_LOG_HEADER}\n"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(log_text, encoding="utf-8")
+    write_text_atomic(log_path, log_text)
     return log_text
 
 
@@ -393,12 +428,118 @@ def _filing_date_as_date(filing_date: str) -> date:
     return datetime.strptime(filing_date, "%Y-%m-%d").date()
 
 
-def _first_content_line(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            return stripped
-    return "(no content)"
+def _thesis_fingerprint(thesis_text: str) -> str:
+    """SHA-256 of the thesis, ignoring line-ending and trailing-whitespace differences."""
+    normalized = "\n".join(line.rstrip() for line in thesis_text.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _recorded_thesis_fingerprint(log_text: str) -> str | None:
+    match = THESIS_FINGERPRINT_RE.search(log_text)
+    return match.group(1) if match else None
+
+
+def _set_thesis_fingerprint(log_text: str, fingerprint: str) -> str:
+    marker = THESIS_FINGERPRINT_TEMPLATE.format(fingerprint=fingerprint)
+    if THESIS_FINGERPRINT_RE.search(log_text):
+        return THESIS_FINGERPRINT_RE.sub(marker, log_text, count=1)
+
+    lines = log_text.splitlines()
+    heading_idx = next((i for i, line in enumerate(lines) if line.startswith("# ")), -1)
+    lines.insert(heading_idx + 1, marker)
+    return "\n".join(lines) + ("\n" if log_text.endswith("\n") else "")
+
+
+def _latest_periodic_filing(sec_client: SecFilingsClient, ticker: str) -> FilingRecord | None:
+    for filing in sec_client.iter_filings(ticker, forms=PERIODIC_FORMS, include_amendments=False):
+        return filing
+    return None
+
+
+def _review_thesis_change(
+    *,
+    ticker: str,
+    thesis_text: str,
+    log_text: str,
+    log_path: Path,
+    sec_client: SecFilingsClient,
+    evaluator: OpenAIThesisEvaluator,
+    instruction_texts: dict[str, str],
+    periodic_reviewed_this_run: bool,
+) -> tuple[str, bool]:
+    """Re-review the latest 10-K/10-Q when the thesis was edited since the last run.
+
+    Logs written before fingerprints existed only get a baseline fingerprint, so
+    upgrading does not trigger a review for every thesis.
+    """
+    fingerprint = _thesis_fingerprint(thesis_text)
+    recorded = _recorded_thesis_fingerprint(log_text)
+    if recorded == fingerprint:
+        return log_text, False
+
+    reviewed = False
+    if recorded is None:
+        print("- Thesis fingerprint recorded (later edits will trigger a re-review)")
+    elif periodic_reviewed_this_run:
+        print("- Thesis changed; already reviewed against a new 10-K/10-Q in this run")
+    else:
+        print("- Thesis changed since the last run; re-reviewing the latest 10-K/10-Q")
+        filing = _latest_periodic_filing(sec_client, ticker)
+        marker = (
+            REVISION_MARKER_TEMPLATE.format(fingerprint=fingerprint[:12], accession=filing.accession_number)
+            if filing
+            else None
+        )
+        if filing is None:
+            print("  - No 10-K/10-Q available for a revision review")
+        elif marker not in log_text:
+            print(f"  - Evaluating {filing.form} filed {filing.filing_date} ({filing.accession_number})")
+            filing_doc = sec_client.fetch_document(filing)
+            evaluation = evaluator.evaluate(
+                EvaluationInput(
+                    ticker=ticker,
+                    form=filing.form,
+                    filing_date=filing.filing_date,
+                    accession_number=filing.accession_number,
+                    filing_url=filing.primary_document_url,
+                    instruction_text=instruction_texts[filing.form],
+                    thesis_text=thesis_text,
+                    filing_text=filing_doc.text,
+                    review_note=REVISION_REVIEW_NOTE,
+                )
+            )
+            log_text = _append_revision_entry(log_text, filing, evaluation, fingerprint)
+            print(f"    {first_content_line(evaluation)}")
+            reviewed = True
+
+    # Only record the new fingerprint once the review succeeded, so failures are retried.
+    log_text = _set_thesis_fingerprint(log_text, fingerprint)
+    write_text_atomic(log_path, log_text)
+    return log_text, reviewed
+
+
+def _append_revision_entry(
+    log_text: str,
+    filing: FilingRecord,
+    evaluation_markdown: str,
+    fingerprint: str,
+) -> str:
+    marker = REVISION_MARKER_TEMPLATE.format(fingerprint=fingerprint[:12], accession=filing.accession_number)
+    title = (
+        f"### Thesis Revision Review: {filing.form} ({filing.filing_date}) - "
+        f"{filing.accession_number}"
+    )
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    metadata = (
+        f"{marker}\n"
+        f"- Filing URL: {filing.primary_document_url}\n"
+        f"- Processed on: {created_at}\n"
+        f"- Thesis fingerprint: {fingerprint[:12]}\n"
+    )
+    block = f"{title}\n{metadata}\n{evaluation_markdown.strip()}\n"
+    if EVALUATION_LOG_HEADER in log_text:
+        return log_text.rstrip() + "\n\n" + block + "\n"
+    return log_text.rstrip() + f"\n\n{EVALUATION_LOG_HEADER}\n\n{block}\n"
 
 
 def _update_status_file_if_needed(
@@ -420,7 +561,7 @@ def _update_status_file_if_needed(
         existing_text = status_path.read_text(encoding="utf-8")
         existing_source = _extract_status_source_accession(existing_text)
         leverage_block = extract_leverage_block(existing_text)
-    if existing_source == latest["accession"]:
+    if existing_source == latest["key"]:
         return False
 
     # The leverage block is owned by leverage-evaluator.py; keep it out of the model's
@@ -428,7 +569,7 @@ def _update_status_file_if_needed(
     updated_on = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     status_text = evaluator.render_status_markdown(
         ticker=ticker,
-        filing_form=latest["form"],
+        filing_form=_source_form_label(latest),
         filing_date=latest["filing_date"],
         accession_number=latest["accession"],
         evaluation_markdown=latest["evaluation"],
@@ -452,9 +593,14 @@ def _update_status_file_if_needed(
             merged = status_text.rstrip() + "\n\n" + "\n".join(leverage_block)
         status_text = merged
 
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    status_path.write_text(status_text.rstrip() + "\n", encoding="utf-8")
+    write_text_atomic(status_path, status_text.rstrip() + "\n")
     return True
+
+
+def _source_form_label(latest: dict[str, str]) -> str:
+    if latest.get("kind") == "revision":
+        return f"{latest['form']} (thesis revision review)"
+    return latest["form"]
 
 
 def _enforce_status_metadata(
@@ -465,7 +611,7 @@ def _enforce_status_metadata(
     updated_on: str,
 ) -> str:
     """Make the source marker and 'Updated on' date authoritative, whatever the model wrote."""
-    marker = STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["accession"])
+    marker = STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["key"])
     lines = STATUS_SOURCE_MARKER_RE.sub("", status_text).splitlines()
 
     heading_idx = next((i for i, line in enumerate(lines) if line.startswith("# ")), None)
@@ -503,8 +649,8 @@ def _fallback_status_text(*, ticker: str, latest: dict[str, str], updated_on: st
         [
             f"# {ticker} Thesis Status",
             "",
-            STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["accession"]),
-            f"- Source filing: {latest['form']} ({latest['filing_date']}) - {latest['accession']}",
+            STATUS_SOURCE_MARKER_TEMPLATE.format(accession=latest["key"]),
+            f"- Source filing: {_source_form_label(latest)} ({latest['filing_date']}) - {latest['accession']}",
             f"- Updated on: {updated_on}",
             f"- Overall status: {overall}",
             f"- Verdict: {verdict or 'Unknown'}",
@@ -515,7 +661,7 @@ def _fallback_status_text(*, ticker: str, latest: dict[str, str], updated_on: st
             f"- Filing impact: {overall}",
             "",
             "## Latest assessment",
-            f"- {_first_content_line(latest['evaluation'])}",
+            f"- {first_content_line(latest['evaluation'])}",
         ]
     )
 
@@ -534,37 +680,52 @@ def _latest_relevant_entry(log_text: str) -> dict[str, str] | None:
     if not entries:
         return None
 
-    relevant = [entry for entry in entries if _entry_is_relevant_for_status(entry)]
+    relevant = [
+        (index, entry) for index, entry in enumerate(entries) if _entry_is_relevant_for_status(entry)
+    ]
     if not relevant:
         return None
 
+    # Filing reviews are ordered by filing date; a thesis revision review counts from the
+    # day it was written, so it supersedes reviews done against the old thesis.
     relevant.sort(
-        key=lambda entry: (
-            entry["filing_date"],
-            entry["accession"],
+        key=lambda item: (
+            item[1]["effective_date"],
+            1 if item[1]["kind"] == "revision" else 0,
+            item[1]["accession"] if item[1]["kind"] == "filing" else "",
+            item[0],
         )
     )
-    return relevant[-1]
+    return relevant[-1][1]
 
 
 def _parse_log_entries(log_text: str) -> list[dict[str, str]]:
-    header_re = re.compile(
-        r"^### SEC Filing Review:\s*(10-K|10-Q|8-K)\s*\((\d{4}-\d{2}-\d{2})\)\s*-\s*([0-9-]+)\s*$",
-        re.MULTILINE,
-    )
-    matches = list(header_re.finditer(log_text))
+    matches = list(LOG_ENTRY_HEADER_RE.finditer(log_text))
     entries: list[dict[str, str]] = []
     for i, match in enumerate(matches):
         start = match.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(log_text)
         block = log_text[start:end].strip()
-        evaluation = _extract_evaluation_text_from_block(block)
+        kind = "revision" if match.group(1) == "Thesis Revision Review" else "filing"
+        form, filing_date, accession = match.group(2), match.group(3), match.group(4)
+
+        key = accession
+        effective_date = filing_date
+        if kind == "revision":
+            fingerprint = REVISION_FINGERPRINT_RE.search(block)
+            processed_on = PROCESSED_ON_RE.search(block)
+            key = f"{accession}+thesis-{fingerprint.group(1) if fingerprint else 'revised'}"
+            effective_date = processed_on.group(1) if processed_on else filing_date
+
         entries.append(
             {
-                "form": match.group(1),
-                "filing_date": match.group(2),
-                "accession": match.group(3),
-                "evaluation": evaluation,
+                "kind": kind,
+                "form": form,
+                "filing_date": filing_date,
+                "accession": accession,
+                "key": key,
+                "effective_date": effective_date,
+                "evaluation": _extract_evaluation_text_from_block(block),
             }
         )
     return entries
@@ -577,11 +738,9 @@ def _extract_evaluation_text_from_block(block: str) -> str:
         if not stripped:
             lines.append(line)
             continue
-        if stripped.startswith("<!-- processed-sec-filing:"):
+        if stripped.startswith(("<!-- processed-sec-filing:", "<!-- thesis-revision-review:")):
             continue
-        if stripped.lower().startswith("- filing url:"):
-            continue
-        if stripped.lower().startswith("- processed on:"):
+        if stripped.lower().startswith(("- filing url:", "- processed on:", "- thesis fingerprint:")):
             continue
         lines.append(line)
     return "\n".join(lines).strip()

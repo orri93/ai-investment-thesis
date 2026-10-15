@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from datetime import datetime, timezone
@@ -21,6 +20,15 @@ from status_file import (
     extract_leverage_block,
     insert_leverage_block,
 )
+from utils import (
+    first_content_line,
+    load_environment,
+    pretty_json,
+    report_unexpected_error,
+    ticker_from_thesis_path,
+    write_text_atomic,
+)
+from xbrl_facts import facts_for_filing, leverage_values
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -83,10 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional override for OpenAI model.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full tracebacks for unexpected errors.",
+    )
     return parser
 
 
 def main() -> int:
+    load_environment()
     args = build_parser().parse_args()
     thesis_dir = Path(args.thesis_dir)
     leverage_dir = Path(args.leverage_dir)
@@ -120,7 +134,7 @@ def main() -> int:
     print()
 
     for thesis_path in thesis_files:
-        ticker = _ticker_from_thesis_path(thesis_path)
+        ticker = ticker_from_thesis_path(thesis_path)
         leverage_path = leverage_dir / thesis_path.name
         print(f"Working on ticker: {ticker}")
 
@@ -160,16 +174,15 @@ def main() -> int:
                 f"{latest_filing.filing_date} ({latest_filing.accession_number})"
             )
 
-            filing_document = sec_client.fetch_filing(
-                ticker,
-                accession_number=latest_filing.accession_number,
-            )
+            filing_document = sec_client.fetch_document(latest_filing)
+            xbrl_values = _xbrl_leverage_values(sec_client, ticker, latest_filing)
 
             metrics, calculated, report, extraction_raw = evaluator.evaluate(
                 ticker=ticker,
                 filing=latest_filing,
                 filing_text=filing_document.text,
                 instruction_text=instruction_text,
+                xbrl_values=xbrl_values,
             )
 
             leverage_log_text = _append_leverage_entry(
@@ -180,7 +193,7 @@ def main() -> int:
                 report_markdown=report,
                 extraction_raw=extraction_raw,
             )
-            leverage_path.write_text(leverage_log_text, encoding="utf-8")
+            write_text_atomic(leverage_path, leverage_log_text)
 
             status_path = status_dir / thesis_path.name
             status_updated = _append_leverage_to_existing_status(
@@ -203,7 +216,7 @@ def main() -> int:
             print()
             failed_count += 1
         except Exception as exc:
-            print(f"- Unexpected error: {exc}", file=sys.stderr)
+            report_unexpected_error(exc, verbose=args.verbose)
             print()
             failed_count += 1
 
@@ -212,6 +225,30 @@ def main() -> int:
     print(f"- Tickers skipped: {skipped_count}")
     print(f"- Tickers failed: {failed_count}")
     return 0 if failed_count == 0 else 1
+
+
+def _xbrl_leverage_values(
+    sec_client: SecFilingsClient,
+    ticker: str,
+    filing: FilingRecord,
+) -> dict[str, float | int | None] | None:
+    """As-reported leverage inputs for the filing, or None if XBRL data is unavailable."""
+    try:
+        facts = facts_for_filing(
+            sec_client.get_company_facts(ticker),
+            filing.accession_number,
+            filing.report_date,
+        )
+    except SecEdgarError as exc:
+        print(f"- XBRL data unavailable, using AI extraction only ({exc})")
+        return None
+    if facts is None:
+        print("- No XBRL facts for this filing, using AI extraction only")
+        return None
+    values = leverage_values(facts, filing.form)
+    found = sum(1 for key, value in values.items() if key != "flow_period_months" and value is not None)
+    print(f"- XBRL values found: {found} of 7")
+    return values
 
 
 def _load_instruction_text(instructions_dir: Path) -> str:
@@ -246,20 +283,12 @@ def _latest_relevant_filing(
     )
 
 
-def _ticker_from_thesis_path(thesis_path: Path) -> str:
-    ticker = thesis_path.stem.strip().upper()
-    if not ticker:
-        raise ValueError(f"Could not derive ticker from thesis file name: {thesis_path}")
-    return ticker
-
-
 def _load_or_initialize_leverage_log(leverage_path: Path, ticker: str) -> str:
     if leverage_path.exists():
         return leverage_path.read_text(encoding="utf-8")
 
     leverage_text = f"# {ticker}\n\n{LEVERAGE_LOG_HEADER}\n"
-    leverage_path.parent.mkdir(parents=True, exist_ok=True)
-    leverage_path.write_text(leverage_text, encoding="utf-8")
+    write_text_atomic(leverage_path, leverage_text)
     return leverage_text
 
 
@@ -297,7 +326,7 @@ def _append_leverage_entry(
     raw_extraction_block = (
         "#### Extraction JSON\n\n"
         "```json\n"
-        f"{_safe_pretty_json(extraction_raw)}\n"
+        f"{pretty_json(extraction_raw)}\n"
         "```\n"
     )
 
@@ -318,29 +347,30 @@ def _append_leverage_entry(
 
 
 def _format_extracted_values(metrics: LeverageMetrics) -> str:
+    sources = metrics.value_sources
     rows = [
-        ("Company Name", metrics.company_name),
-        ("Period End", metrics.period_end),
-        ("Currency", metrics.currency),
-        ("Total Debt", _fmt_number(metrics.total_debt)),
-        ("Shareholders' Equity", _fmt_number(metrics.shareholders_equity)),
-        ("Total Assets", _fmt_number(metrics.total_assets)),
-        ("Net Debt", _fmt_number(metrics.net_debt)),
-        ("EBITDA", _fmt_number(metrics.ebitda)),
-        ("EBIT", _fmt_number(metrics.ebit)),
-        ("Interest Expense", _fmt_number(metrics.interest_expense)),
-        ("Flow Period (months)", metrics.flow_period_months),
-        ("Fixed Cost Notes", metrics.fixed_cost_notes),
+        ("Company Name", metrics.company_name, None),
+        ("Period End", metrics.period_end, None),
+        ("Currency", metrics.currency, None),
+        ("Total Debt", _fmt_number(metrics.total_debt), sources.get("total_debt")),
+        ("Shareholders' Equity", _fmt_number(metrics.shareholders_equity), sources.get("shareholders_equity")),
+        ("Total Assets", _fmt_number(metrics.total_assets), sources.get("total_assets")),
+        ("Net Debt", _fmt_number(metrics.net_debt), sources.get("net_debt")),
+        ("EBITDA", _fmt_number(metrics.ebitda), sources.get("ebitda")),
+        ("EBIT", _fmt_number(metrics.ebit), sources.get("ebit")),
+        ("Interest Expense", _fmt_number(metrics.interest_expense), sources.get("interest_expense")),
+        ("Flow Period (months)", metrics.flow_period_months, None),
+        ("Fixed Cost Notes", metrics.fixed_cost_notes, None),
     ]
 
     lines = [
         "#### Extracted Values",
         "",
-        "| Metric | Value |",
-        "|---|---|",
+        "| Metric | Value | Source |",
+        "|---|---|---|",
     ]
-    for metric, value in rows:
-        lines.append(f"| {metric} | {_escape_table(value)} |")
+    for metric, value, source in rows:
+        lines.append(f"| {metric} | {_escape_table(value)} | {source or ''} |")
     return "\n".join(lines)
 
 
@@ -367,27 +397,6 @@ def _format_ratio_values(calculated: dict[str, float | None]) -> str:
     for ratio, value in rows:
         lines.append(f"| {ratio} | {_escape_table(value)} |")
     return "\n".join(lines)
-
-
-def _safe_pretty_json(text: str) -> str:
-    candidate = _extract_json_object(text)
-    try:
-        return json.dumps(json.loads(candidate), indent=2)
-    except Exception:
-        return text
-
-
-def _extract_json_object(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
-
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return stripped[start : end + 1]
-
-    raise OpenAILeverageError("OpenAI extraction did not return a JSON object.")
 
 
 def _fmt_number(value: float | None) -> str:
@@ -428,7 +437,7 @@ def _append_leverage_to_existing_status(
     if updated_status is None or updated_status == status_text:
         return False
 
-    status_path.write_text(updated_status, encoding="utf-8")
+    write_text_atomic(status_path, updated_status)
     return True
 
 
@@ -525,7 +534,7 @@ def _build_leverage_status_block(
     category = leverage_category(calculated)
 
     verdict = _extract_verdict(report_markdown)
-    summary = _first_content_line(report_markdown)
+    summary = first_content_line(report_markdown)
     block = [
         LEVERAGE_STATUS_START_MARKER,
         f"### Latest leverage assessment ({filing.form} {filing.filing_date})",
@@ -554,14 +563,6 @@ def _extract_verdict(text: str) -> str:
             cleaned = cleaned.strip(" -—:")
             return cleaned
     return "(no verdict)"
-
-
-def _first_content_line(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            return stripped
-    return "(no content)"
 
 
 if __name__ == "__main__":

@@ -11,10 +11,9 @@ cd "$(dirname "$0")"
 # Activate the Python virtual environment
 source ./venv/bin/activate
 
-# Set environment variables
-# Replace 'your_openai_api_key' with your actual OpenAI API key
-export OPENAI_API_KEY="your_openai_api_key"
-export OPENAI_MODEL="gpt-6.1-sol"
+# Configuration
+# Settings (OPENAI_API_KEY, OPENAI_MODEL) are read from .env;
+# copy .env.example to .env and fill in your values.
 
 # Execute the thesis generator script
 # Pass the draft thesis file path as script argument

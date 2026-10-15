@@ -45,69 +45,54 @@ source venv/bin/activate
 Install the Requirements
 ```bash
 pip install -r requirements.txt
+
+# For development (adds pytest)
+pip install -r requirements-dev.txt
 ```
 
-## Set Environment Variable for OpenAI API Key
+## Configuration (.env)
+
+All scripts read their settings from a `.env` file in the project root. The file is git-ignored, so your credentials never end up in version control.
+
+1. Copy [.env.example](.env.example) to `.env`.
+2. Fill in your values:
+
+```bash
+OPENAI_API_KEY=your_openai_api_key
+SEC_USER_AGENT=ai-investment-thesis/1.0 your-email@example.com
+# Optional: default model for all scripts
+OPENAI_MODEL=gpt-6.1-sol
+```
+
+Variables that are already set in the environment take precedence over `.env`, so you can still override a value for one run:
 
 ```bash
 # PowerShell
-$env:OPENAI_API_KEY="your_openai_api_key"
+$env:OPENAI_MODEL="gpt-4.1-mini"
 
 # Windows
-set OPENAI_API_KEY=your_openai_api_key
+set OPENAI_MODEL=gpt-4.1-mini
 
 # Linux / MacOS
-export OPENAI_API_KEY=your_openai_api_key
+export OPENAI_MODEL=gpt-4.1-mini
 ```
 
-## Set Environment Variable for SEC Filing API
+### Why SEC_USER_AGENT Is Required
 
 This project reads company filings directly from SEC EDGAR. The SEC requires automated clients to identify themselves with a descriptive `User-Agent` header that includes contact information. This is necessary because SEC services monitor automated access and may reject or throttle requests that do not identify the caller properly.
 
-Set `SEC_USER_AGENT` before running the script:
+Use a real email address or other valid contact detail in the value. The SEC client in [sec_filings.py](sec_filings.py) will fail at startup if this variable is missing. The client also keeps requests below the SEC limit of 10 per second and retries temporary failures (HTTP 429/5xx and network errors) with backoff.
 
-```bash
-# PowerShell
-$env:SEC_USER_AGENT="ai-investment-thesis/1.0 your-email@example.com"
+## Quick Start: Using the Helper Scripts
 
-# Windows
-set SEC_USER_AGENT=ai-investment-thesis/1.0 your-email@example.com
+The helper scripts activate the virtual environment and run the application. They contain no credentials (those live in `.env`), so you can run them directly:
 
-# Linux / MacOS
-export SEC_USER_AGENT="ai-investment-thesis/1.0 your-email@example.com"
-```
+- **Windows:** `.\evaluate-example.ps1`, `.\leverage-evaluate-example.ps1`, `.\generate-example.ps1 <draft-file>`
+- **Linux/macOS:** `./evaluate-example.sh`, `./leverage-evaluate-example.sh`, `./generate-example.sh <draft-file>` (run `chmod +x *.sh` once)
 
-Use a real email address or other valid contact detail in the value. The SEC client in [sec_filings.py](sec_filings.py) will fail at startup if this variable is missing.
+Extra arguments are passed through, for example `.\evaluate-example.ps1 --verbose`.
 
-## Quick Start: Using Evaluate Scripts
-
-This project includes example evaluation scripts that set up the environment and run the application:
-
-- **Windows:** `evaluate-example.ps1`
-- **Linux/macOS:** `evaluate-example.sh`
-
-To create a private version with your actual credentials:
-
-### For Windows
-
-1. Copy `evaluate-example.ps1` to `evaluate.ps1` (this file is git-ignored)
-2. Open `evaluate.ps1` in your editor
-3. Replace the placeholder values:
-   - `your_openai_api_key` → your actual OpenAI API key
-   - `your-email@example.com` → your actual email address
-4. Run the script: `.\evaluate.ps1`
-
-### For Linux/macOS
-
-1. Copy `evaluate-example.sh` to `evaluate.sh` (this file is git-ignored)
-2. Make it executable: `chmod +x evaluate.sh`
-3. Open `evaluate.sh` in your editor
-4. Replace the placeholder values:
-   - `your_openai_api_key` → your actual OpenAI API key
-   - `your-email@example.com` → your actual email address
-5. Run the script: `./evaluate.sh`
-
-The example scripts are safe to commit to version control; the private versions containing your credentials should never be committed.
+Private copies named `evaluate.ps1`, `generate.sh`, and so on are still git-ignored if you prefer to keep customized versions.
 
 ## How The System Works
 
@@ -125,6 +110,8 @@ At a high level, the workflow is:
 8. The OpenAI evaluator produces a short markdown review intended to be appended to the log file Evaluation Log.
 9. The script appends a new Evaluation Log entry to the log file that includes the filing type, filing date, accession number, filing URL, processing date, and the OpenAI-generated evaluation.
 10. A hidden processed marker is stored alongside the new entry so the same SEC filing will not be processed again in a future run.
+11. If the thesis file was edited since the last run, the latest `10-K`/`10-Q` is re-reviewed against the revised thesis (see [Thesis Revisions](#thesis-revisions)).
+12. The thesis status file in [status](status) is regenerated from the latest relevant log entry whenever that entry changes.
 
 ### Core Components
 
@@ -132,9 +119,9 @@ At a high level, the workflow is:
 
 - Orchestrates the end-to-end workflow.
 - Iterates through all thesis files.
-- Detects new filings.
+- Detects new filings and thesis edits.
 - Calls the evaluator.
-- Writes updated evaluation logs to [log](log) files.
+- Writes updated evaluation logs to [log](log) files and status files to [status](status).
 - Prints progress and summary information during the run.
 
 `sec_filings.py`
@@ -143,13 +130,23 @@ At a high level, the workflow is:
 - Lists available `10-K`, `10-Q`, and `8-K` filings.
 - Fetches the primary filing document from SEC EDGAR.
 - Lists a filing's documents from its index page and downloads exhibits (such as `EX-99.1`).
-- Enforces the requirement that `SEC_USER_AGENT` must be configured.
+- Downloads XBRL company facts (as-reported financial values).
+- Throttles and retries requests, and enforces the requirement that `SEC_USER_AGENT` must be configured.
 
 `openai_evaluator.py`
 
 - Wraps the OpenAI API call.
 - Builds the evaluation prompt from three inputs: the thesis markdown, the SEC filing text, and the form-specific instruction file.
 - Returns markdown suitable for inclusion in the log file Evaluation Log.
+- Also contains the leverage extraction, ratio, and report logic used by `leverage-evaluator.py`.
+
+Supporting modules
+
+- [filing_text.py](filing_text.py): converts filing HTML to text and builds section-aware excerpts.
+- [xbrl_facts.py](xbrl_facts.py): selects as-reported XBRL values for one filing (debt, equity, assets, operating income, D&A, interest, cash flows).
+- [status_file.py](status_file.py): finds, removes, and inserts the leverage block in status files.
+- [openai_support.py](openai_support.py): shared OpenAI client creation and request handling.
+- [utils.py](utils.py): shared helpers, `.env` loading, and atomic file writes (logs and status files are written to a temporary file and then renamed, so a crash never leaves a half-written file).
 
 `instructions/`
 
@@ -170,6 +167,24 @@ At a high level, the workflow is:
 - If a log file does not exist, it is created automatically with:
 	- a top-level header from the thesis ticker/file name (for example `# AMZN`)
 	- a `## Evaluation Log` header
+
+`status/`
+
+- Stores one status file per thesis (for example `status/amzn.md`), with the overall status (Green/Yellow/Red), verdict, thesis validity, per-part ratings, and a one-line latest assessment.
+- Regenerated from the latest relevant log entry: every `10-K`/`10-Q` review, and `8-K` reviews unless they are informational / No Action.
+- The source marker and `Updated on` date are always set by the code, not the model. If the model's reply is unusable, a fallback status is built from the evaluation's own verdict.
+- `leverage-evaluator.py` adds a leverage block to existing status files; `main.py` preserves it when it regenerates the status.
+- Use `--status-dir` to write status files elsewhere.
+
+### Thesis Revisions
+
+The log stores a fingerprint (SHA-256) of the thesis in a hidden marker:
+
+```markdown
+<!-- thesis-sha256:... -->
+```
+
+When the thesis file changes, the next run re-reviews the latest `10-K` or `10-Q` against the revised thesis and appends a `### Thesis Revision Review` entry. That entry then drives the status file. If a new `10-K`/`10-Q` was already reviewed in the same run, no extra review is needed. The first run after upgrading only records the fingerprint; it does not re-review every thesis. Whitespace and line-ending changes are ignored.
 
 ### How Reprocessing Is Prevented
 
@@ -206,7 +221,7 @@ When you run the script, it prints operational progress to the console, includin
 
 ### Requirements Summary
 
-The script depends on both of these environment variables being configured before execution:
+The script depends on both of these settings being configured (in `.env` or the environment) before execution:
 
 - `OPENAI_API_KEY` for the OpenAI API
 - `SEC_USER_AGENT` for SEC EDGAR access
@@ -226,20 +241,15 @@ The `thesis-generator.py` script helps you complete and improve draft theses usi
 python thesis-generator.py thesis/my-company-draft.md
 ```
 
-You can also run the helper scripts:
+You can also run the helper scripts (credentials come from `.env`):
 
 ```bash
 # Windows PowerShell
-.\generate.ps1 .\thesis\my-company-draft.md
+.\generate-example.ps1 .\thesis\my-company-draft.md
 
 # Linux / macOS
-./generate.sh ./thesis/my-company-draft.md
+./generate-example.sh ./thesis/my-company-draft.md
 ```
-
-To keep credentials private, copy and edit the example script first:
-
-- Windows: copy `generate-example.ps1` to `generate.ps1`, add your real values, then run `./generate.ps1 <draft-file>`
-- Linux/macOS: copy `generate-example.sh` to `generate.sh`, add your real values, then run `./generate.sh <draft-file>`
 
 The script will:
 1. Read your draft (can be incomplete, just an idea, or partially written)
@@ -271,7 +281,7 @@ Steps for manual thesis creation:
 ## Run the Application
 
 ```bash
-# Ensure OPENAI_API_KEY and SEC_USER_AGENT are set first
+# Ensure OPENAI_API_KEY and SEC_USER_AGENT are set first (.env or environment)
 python main.py
 
 # Scan depth for the first run per thesis (later runs catch up with the log automatically)
@@ -280,8 +290,11 @@ python main.py --filings-limit 10
 # Override the OpenAI model for this run
 python main.py --openai-model gpt-4.1-mini
 
-# Write logs to a custom folder
-python main.py --log-dir my-logs
+# Write logs and status files to custom folders
+python main.py --log-dir my-logs --status-dir my-status
+
+# Print full tracebacks for unexpected errors (all scripts support --verbose)
+python main.py --verbose
 ```
 
 ## Leverage Evaluator (Helper Tool)
@@ -303,22 +316,7 @@ python leverage-evaluator.py --filings-limit 25 --openai-model gpt-4.1-mini
 
 ### Use Leverage Helper Scripts
 
-This project includes helper scripts for leverage evaluation setup and execution:
-
-- Windows: `leverage-evaluate-example.ps1`
-- Linux/macOS: `leverage-evaluate-example.sh`
-
-To keep credentials private, copy and edit the example script first:
-
-1. Windows:
-   - Copy `leverage-evaluate-example.ps1` to `leverage-evaluate.ps1` (private)
-   - Replace `your_openai_api_key` and `your-email@example.com`
-   - Run: `./leverage-evaluate.ps1`
-2. Linux/macOS:
-   - Copy `leverage-evaluate-example.sh` to `leverage-evaluate.sh` (private)
-   - `chmod +x leverage-evaluate.sh`
-   - Replace `your_openai_api_key` and `your-email@example.com`
-   - Run: `./leverage-evaluate.sh`
+Run `.\leverage-evaluate-example.ps1` (Windows) or `./leverage-evaluate-example.sh` (Linux/macOS). Credentials come from `.env`.
 
 ### What It Produces
 
@@ -326,4 +324,28 @@ To keep credentials private, copy and edit the example script first:
 - Each entry references the SEC filing URL, filing accession number, and processing date.
 - Reprocessing is prevented with a processed marker (`processed-leverage-filing:<accession>`), so the same filing is not evaluated again.
 - If an existing `status/<ticker>.md` file is missing the leverage block for the latest processed filing, it is restored from the leverage log without calling OpenAI. `main.py` preserves this block when it regenerates a status file.
-- Values are extracted from the filing only (no web search). For `10-Q` filings, EBITDA is annualized before computing Net Debt / EBITDA. The rule-based category uses the thresholds in [instructions/leverage.md](instructions/leverage.md): High if any available ratio is in the high range, Low only if every available ratio is in the low range. The report's verdict is asked to follow it.
+- Debt, equity, assets, cash, operating income (EBIT), D&A (for EBITDA), and interest expense come from SEC XBRL data reported in that filing when available. The AI extraction from the filing text (no web search) only fills gaps. The Extracted Values table shows the source of each value.
+- For `10-Q` filings, EBITDA is annualized before computing Net Debt / EBITDA. The rule-based category uses the thresholds in [instructions/leverage.md](instructions/leverage.md): High if any available ratio is in the high range, Low only if every available ratio is in the low range. The report's verdict is asked to follow it.
+
+## Valuation Models (Helper Tool)
+
+`valuation-models.py` builds a valuation document per ticker in [valuation](valuation) from several years of filings:
+
+1. Extracts financial data from each `10-K`/`10-Q`. As-reported SEC XBRL values (revenue, operating income, cash flows, debt, cash, equity, and more) are authoritative; the AI extraction from the filing text fills the remaining fields.
+2. Builds valuation models (DCF, normalized earnings, scenarios). Web search is used only for market inputs such as share price, risk-free rate, beta, and equity risk premium, each cited with source and date.
+3. Assesses qualitative value drivers from the filings.
+4. Connects recent filings to valuation impact.
+
+```bash
+python valuation-models.py
+python valuation-models.py --ticker amzn --10k-years 3 --10q-quarters 4 --8k-months 12
+```
+
+## Running Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests cover the parsers, status handling, XBRL selection, SEC client retry/throttling, OpenAI retry behavior, and thesis revision logic. They make no network or OpenAI calls.

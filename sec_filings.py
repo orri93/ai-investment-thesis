@@ -4,7 +4,11 @@ import html
 import json
 import os
 import re
+import socket
+import threading
+import time
 from dataclasses import dataclass
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -12,6 +16,13 @@ from urllib.request import Request, urlopen
 
 
 SUPPORTED_FORMS = ("10-K", "10-Q", "8-K")
+
+# SEC allows at most 10 requests per second per client; stay safely below it.
+MIN_REQUEST_INTERVAL_SECONDS = 0.12
+MAX_REQUEST_ATTEMPTS = 4
+RETRY_BACKOFF_SECONDS = 1.0
+MAX_RETRY_AFTER_SECONDS = 30.0
+RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class SecEdgarError(Exception):
@@ -111,6 +122,11 @@ class SecFilingsClient:
     ticker_lookup_url = "https://www.sec.gov/files/company_tickers.json"
     submissions_url_template = "https://data.sec.gov/submissions/CIK{cik}.json"
     historical_submissions_url_template = "https://data.sec.gov/submissions/{name}"
+    company_facts_url_template = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+
+    # Shared by all client instances so separate clients in one process respect the rate limit.
+    _throttle_lock = threading.Lock()
+    _last_request_at = 0.0
 
     def __init__(self, user_agent: str | None = None, timeout: float = 30.0):
         resolved_user_agent = user_agent or os.getenv("SEC_USER_AGENT")
@@ -124,6 +140,8 @@ class SecFilingsClient:
         self.timeout = timeout
         self._company_cache: dict[str, CompanyInfo] | None = None
         self._submissions_cache: dict[str, dict[str, Any]] = {}
+        self._historical_cache: dict[str, dict[str, Any]] = {}
+        self._company_facts_cache: dict[str, dict[str, Any]] = {}
 
     def lookup_company(self, ticker: str) -> CompanyInfo:
         normalized_ticker = ticker.strip().upper()
@@ -140,6 +158,14 @@ class SecFilingsClient:
             url = self.submissions_url_template.format(cik=company.cik)
             self._submissions_cache[company.cik] = self._get_json(url)
         return self._submissions_cache[company.cik]
+
+    def get_company_facts(self, ticker: str) -> dict[str, Any]:
+        """Return the XBRL company-facts document (all as-reported values) for a ticker."""
+        company = self.lookup_company(ticker)
+        if company.cik not in self._company_facts_cache:
+            url = self.company_facts_url_template.format(cik=company.cik)
+            self._company_facts_cache[company.cik] = self._get_json(url)
+        return self._company_facts_cache[company.cik]
 
     def list_filings(
         self,
@@ -198,9 +224,11 @@ class SecFilingsClient:
             file_name = file_entry.get("name")
             if not file_name:
                 continue
-            historical_filings = self._get_json(
-                self.historical_submissions_url_template.format(name=file_name)
-            )
+            if file_name not in self._historical_cache:
+                self._historical_cache[file_name] = self._get_json(
+                    self.historical_submissions_url_template.format(name=file_name)
+                )
+            historical_filings = self._historical_cache[file_name]
             for filing in self._records_from_table(company, historical_filings):
                 if filing.accession_number in seen_accessions:
                     continue
@@ -261,6 +289,10 @@ class SecFilingsClient:
             filing_date=filing_date,
             include_amendments=include_amendments,
         )
+        return self.fetch_document(filing, encoding=encoding)
+
+    def fetch_document(self, filing: FilingRecord, *, encoding: str = "utf-8") -> FilingDocument:
+        """Download the primary document of an already-resolved filing (no filing-list scan)."""
         content, headers = self._get_bytes(filing.primary_document_url)
         return FilingDocument(
             filing=filing,
@@ -391,13 +423,31 @@ class SecFilingsClient:
             },
         )
 
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                return response.read(), dict(response.headers.items())
-        except HTTPError as exc:
-            raise SecEdgarError(f"SEC request failed for {url}: {exc.code}") from exc
-        except URLError as exc:
-            raise SecEdgarError(f"SEC request failed for {url}: {exc.reason}") from exc
+        for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+            self._throttle()
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    return response.read(), dict(response.headers.items())
+            except HTTPError as exc:
+                if exc.code not in RETRYABLE_HTTP_STATUS or attempt == MAX_REQUEST_ATTEMPTS:
+                    raise SecEdgarError(f"SEC request failed for {url}: {exc.code}") from exc
+                delay = _retry_after_seconds(exc) or RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            except (URLError, socket.timeout, TimeoutError, ConnectionError, HTTPException) as exc:
+                if attempt == MAX_REQUEST_ATTEMPTS:
+                    reason = getattr(exc, "reason", exc)
+                    raise SecEdgarError(f"SEC request failed for {url}: {reason}") from exc
+                delay = RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            time.sleep(delay)
+
+        raise SecEdgarError(f"SEC request failed for {url}")
+
+    @classmethod
+    def _throttle(cls) -> None:
+        with cls._throttle_lock:
+            wait = cls._last_request_at + MIN_REQUEST_INTERVAL_SECONDS - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_request_at = time.monotonic()
 
     @staticmethod
     def _normalize_forms(
@@ -424,6 +474,14 @@ class SecFilingsClient:
         if value in (None, ""):
             return None
         return str(value)
+
+
+def _retry_after_seconds(exc: HTTPError) -> float | None:
+    value = exc.headers.get("Retry-After") if exc.headers else None
+    try:
+        return min(float(value), MAX_RETRY_AFTER_SECONDS) if value else None
+    except ValueError:
+        return None
 
 
 def _parse_filing_index(index_html: str, filing: FilingRecord) -> list[FilingAttachment]:

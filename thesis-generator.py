@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from openai_support import create_openai_client, create_response_text
+from utils import load_environment, report_unexpected_error, write_text_atomic
 
 # Templates and drafts are not finished theses, so they are not used as examples.
 NON_EXAMPLE_FILES = {"general-thesis.md"}
@@ -106,6 +107,7 @@ class ThesisGenerator:
 
 
 def main():
+    load_environment()
     parser = argparse.ArgumentParser(
         description=(
             "Generate and refine investment theses using OpenAI. "
@@ -119,7 +121,12 @@ def main():
     parser.add_argument(
         "--openai-model",
         default=None,
-        help="Override the OpenAI model (default: gpt-4.1-mini)",
+        help="Override the OpenAI model (default: OPENAI_MODEL or gpt-4.1-mini)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full tracebacks for unexpected errors.",
     )
 
     args = parser.parse_args()
@@ -129,9 +136,7 @@ def main():
         print(f"Error: Thesis file not found: {thesis_path}")
         sys.exit(1)
 
-    # Read the draft thesis
-    with open(thesis_path, "r", encoding="utf-8") as f:
-        draft_text = f.read()
+    draft_text = thesis_path.read_text(encoding="utf-8")
 
     if not draft_text.strip():
         print("Error: Thesis file is empty.")
@@ -146,12 +151,15 @@ def main():
     except ThesisGeneratorError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    except Exception as exc:
+        report_unexpected_error(exc, verbose=args.verbose, prefix="")
+        sys.exit(1)
 
     # Keep the original draft so a poor generation never destroys the user's notes.
     backup_path = thesis_path.with_name(thesis_path.name + ".bak")
     shutil.copy2(thesis_path, backup_path)
 
-    thesis_path.write_text(improved_thesis, encoding="utf-8")
+    write_text_atomic(thesis_path, improved_thesis)
 
     print(f"Thesis saved to: {thesis_path} (original draft backed up to {backup_path.name})")
     print("\nGenerated thesis preview (first 500 chars):\n")

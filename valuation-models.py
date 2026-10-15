@@ -13,6 +13,14 @@ from openai import OpenAI
 from filing_text import build_filing_excerpt
 from openai_support import create_openai_client, create_response_text
 from sec_filings import FilingRecord, SecEdgarError, SecFilingsClient
+from utils import (
+    extract_json_object,
+    load_environment,
+    report_unexpected_error,
+    ticker_from_thesis_path,
+    write_text_atomic,
+)
+from xbrl_facts import facts_for_filing, non_null_values, valuation_values
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -102,10 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Process only this ticker (must have a thesis file).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full tracebacks for unexpected errors.",
+    )
     return parser
 
 
 def main() -> int:
+    load_environment()
     args = build_parser().parse_args()
     thesis_dir = Path(args.thesis_dir)
     valuation_dir = Path(args.valuation_dir)
@@ -147,7 +161,7 @@ def main() -> int:
     print()
 
     for thesis_path in thesis_files:
-        ticker = _ticker_from_thesis_path(thesis_path)
+        ticker = ticker_from_thesis_path(thesis_path)
         valuation_path = valuation_dir / thesis_path.name
         print(f"Working on ticker: {ticker}")
 
@@ -179,13 +193,21 @@ def main() -> int:
             )
             print(f"  - Fetched {len(filing_texts)} filing documents")
 
+            company_facts = None
+            try:
+                company_facts = sec_client.get_company_facts(ticker)
+            except SecEdgarError as exc:
+                print(f"  - XBRL data unavailable, using AI extraction only ({exc})")
+
             # Step 2: Extract financial data (Step 1 in requirements)
             print("  - Step 1: Extracting financial data...")
             extractions = _step_extract_financials(
                 openai_client, model, ticker, filing_texts, instructions["extraction"],
                 max_chars=args.max_filing_chars,
+                company_facts=company_facts,
             )
-            print(f"  - Extracted data from {len(extractions)} filings")
+            xbrl_count = sum(1 for extraction in extractions if extraction.get("_xbrl_fields"))
+            print(f"  - Extracted data from {len(extractions)} filings ({xbrl_count} with XBRL values)")
 
             # Step 3: Build valuation models (Step 2 in requirements)
             print("  - Step 2: Constructing valuation models...")
@@ -213,7 +235,7 @@ def main() -> int:
             output = _assemble_valuation_output(
                 ticker, filings, extractions, valuation_models, qualitative, impact
             )
-            valuation_path.write_text(output, encoding="utf-8")
+            write_text_atomic(valuation_path, output)
             print(f"  - Valuation written to: {valuation_path.name}")
             print()
             processed_count += 1
@@ -223,7 +245,7 @@ def main() -> int:
             print()
             failed_count += 1
         except Exception as exc:
-            print(f"  - Unexpected error: {exc}", file=sys.stderr)
+            report_unexpected_error(exc, verbose=args.verbose, prefix="  - ")
             print()
             failed_count += 1
 
@@ -247,13 +269,6 @@ def _load_instructions(instructions_dir: Path) -> dict[str, str]:
             raise FileNotFoundError(f"Missing instruction file: {path}")
         instructions[key] = path.read_text(encoding="utf-8").strip()
     return instructions
-
-
-def _ticker_from_thesis_path(thesis_path: Path) -> str:
-    ticker = thesis_path.stem.strip().upper()
-    if not ticker:
-        raise ValueError(f"Could not derive ticker from thesis file name: {thesis_path}")
-    return ticker
 
 
 def _gather_filings(
@@ -316,15 +331,13 @@ def _fetch_filing_texts(
     for form_type in ("10-K", "10-Q", "8-K"):
         for filing in filings.get(form_type, []):
             try:
-                doc = sec_client.fetch_filing(
-                    ticker,
-                    accession_number=filing.accession_number,
-                )
+                doc = sec_client.fetch_document(filing)
                 text = build_filing_excerpt(filing.form, doc.text, max_chars=max_chars)
                 results.append({
                     "form": filing.form,
                     "filing_date": filing.filing_date,
                     "accession_number": filing.accession_number,
+                    "report_date": filing.report_date,
                     "url": filing.primary_document_url,
                     "text": text,
                 })
@@ -348,6 +361,7 @@ def _step_extract_financials(
     instruction_text: str,
     *,
     max_chars: int,
+    company_facts: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured financial data from each 10-K and 10-Q filing."""
     extractions: list[dict[str, Any]] = []
@@ -361,6 +375,15 @@ def _step_extract_financials(
             "data from SEC filings with high precision. Return strict JSON only."
         )
 
+        xbrl_values = _xbrl_valuation_values(company_facts, filing_info)
+        xbrl_section = (
+            "As-reported XBRL values for this filing (USD and shares in millions). These are "
+            "authoritative: copy them exactly and extract only the remaining fields from the text:\n"
+            f"{json.dumps(xbrl_values, indent=2)}\n\n"
+            if xbrl_values
+            else ""
+        )
+
         user_prompt = (
             f"Ticker: {ticker}\n"
             f"Filing form: {filing_info['form']}\n"
@@ -368,23 +391,59 @@ def _step_extract_financials(
             f"Accession: {filing_info['accession_number']}\n"
             f"Filing URL: {filing_info['url']}\n\n"
             f"Extraction instructions:\n{instruction_text}\n\n"
+            f"{xbrl_section}"
             f"SEC filing text (may be truncated):\n{filing_info['text'][:max_chars]}"
         )
 
         try:
             response = _call_openai(client, model, system_prompt, user_prompt, web_search=False)
-            extraction_json = _extract_json_from_response(response)
-            extraction = json.loads(extraction_json)
+            extraction = json.loads(extract_json_object(response))
+            if not isinstance(extraction, dict):
+                raise ValueError("Extraction JSON is not an object.")
+            extraction = apply_xbrl_overrides(extraction, xbrl_values)
             extraction["_filing_form"] = filing_info["form"]
             extraction["_filing_date"] = filing_info["filing_date"]
             extraction["_accession_number"] = filing_info["accession_number"]
             extractions.append(extraction)
-        except (json.JSONDecodeError, ValuationError) as exc:
+        except (ValueError, ValuationError) as exc:
             print(f"    - Warning: extraction failed for {filing_info['form']} "
                   f"{filing_info['filing_date']}: {exc}")
             continue
 
     return extractions
+
+
+def _xbrl_valuation_values(
+    company_facts: dict[str, Any] | None,
+    filing_info: dict[str, Any],
+) -> dict[str, Any]:
+    if not company_facts:
+        return {}
+    facts = facts_for_filing(company_facts, filing_info["accession_number"], filing_info.get("report_date"))
+    if facts is None:
+        return {}
+    return non_null_values(valuation_values(facts, filing_info["form"]))
+
+
+def apply_xbrl_overrides(extraction: dict[str, Any], xbrl_values: dict[str, Any]) -> dict[str, Any]:
+    """Overwrite model-extracted fields with as-reported XBRL values and record which ones."""
+    overridden: list[str] = []
+
+    def merge(target: dict[str, Any], source: dict[str, Any], prefix: str) -> None:
+        for key, value in source.items():
+            if isinstance(value, dict):
+                section = target.get(key)
+                if not isinstance(section, dict):
+                    section = target[key] = {}
+                merge(section, value, f"{prefix}{key}.")
+            else:
+                target[key] = value
+                overridden.append(f"{prefix}{key}")
+
+    merge(extraction, xbrl_values, "")
+    if overridden:
+        extraction["_xbrl_fields"] = overridden
+    return extraction
 
 
 # ---------------------------------------------------------------------------
@@ -557,27 +616,6 @@ def _call_openai(
         error_type=ValuationError,
         web_search=web_search,
     )
-
-
-def _extract_json_from_response(text: str) -> str:
-    """Extract a JSON object from response text."""
-    stripped = text.strip()
-
-    # Remove code fences if present
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        stripped = "\n".join(lines).strip()
-
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
-
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return stripped[start:end + 1]
-
-    raise ValuationError("Response did not contain a JSON object.")
 
 
 # ---------------------------------------------------------------------------

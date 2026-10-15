@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from filing_text import ExhibitText, build_filing_excerpt, html_to_text
 from openai_support import create_openai_client, create_response_text
 from sec_filings import FilingRecord
+from utils import extract_json_object
 
 # Thresholds from instructions/leverage.md ("Practical interpretation").
 HIGH_NET_DEBT_TO_EBITDA = 3.5
@@ -35,6 +36,8 @@ class EvaluationInput:
     thesis_text: str
     filing_text: str
     exhibits: tuple[ExhibitText, ...] = ()
+    # Extra context for the reviewer, e.g. that the thesis was revised since the last review.
+    review_note: str | None = None
 
 
 class OpenAIThesisEvaluator:
@@ -65,7 +68,8 @@ class OpenAIThesisEvaluator:
             f"Filing date: {payload.filing_date}\n"
             f"Accession: {payload.accession_number}\n"
             f"Filing URL: {payload.filing_url}\n\n"
-            "Instruction file:\n"
+            + (f"Review context:\n{payload.review_note}\n\n" if payload.review_note else "")
+            + "Instruction file:\n"
             f"{payload.instruction_text}\n\n"
             "Current thesis markdown:\n"
             f"{payload.thesis_text}\n\n"
@@ -162,6 +166,60 @@ class LeverageMetrics:
     fixed_cost_notes: str | None = None
     # Months covered by the EBITDA/EBIT/interest figures (3 for a quarter, 12 for a year).
     flow_period_months: int | None = None
+    # Field name -> "SEC XBRL" or "AI extraction".
+    value_sources: dict[str, str] = field(default_factory=dict, compare=False)
+
+
+LEVERAGE_NUMERIC_FIELDS = (
+    "total_debt",
+    "shareholders_equity",
+    "total_assets",
+    "net_debt",
+    "ebitda",
+    "ebit",
+    "interest_expense",
+)
+LEVERAGE_FLOW_FIELDS = ("ebitda", "ebit", "interest_expense")
+SOURCE_XBRL = "SEC XBRL"
+SOURCE_AI = "AI extraction"
+
+
+def merge_xbrl_metrics(
+    metrics: LeverageMetrics,
+    xbrl_values: dict[str, float | int | None] | None,
+) -> LeverageMetrics:
+    """Use as-reported XBRL values where available; AI-extracted values fill the gaps.
+
+    Flow values (EBIT, EBITDA, interest) must cover one period, so AI values for a
+    different period than the XBRL one are dropped rather than mixed.
+    """
+    xbrl_values = xbrl_values or {}
+    xbrl_months = xbrl_values.get("flow_period_months")
+    xbrl_has_flows = any(xbrl_values.get(name) is not None for name in LEVERAGE_FLOW_FIELDS)
+
+    updates: dict[str, object] = {}
+    sources: dict[str, str] = {}
+    for name in LEVERAGE_NUMERIC_FIELDS:
+        xbrl_value = xbrl_values.get(name)
+        if xbrl_value is not None:
+            updates[name] = float(xbrl_value)
+            sources[name] = SOURCE_XBRL
+            continue
+        if getattr(metrics, name) is None:
+            continue
+        period_mismatch = (
+            name in LEVERAGE_FLOW_FIELDS
+            and xbrl_has_flows
+            and metrics.flow_period_months not in (None, xbrl_months)
+        )
+        if period_mismatch:
+            updates[name] = None
+        else:
+            sources[name] = SOURCE_AI
+
+    if xbrl_has_flows and xbrl_months:
+        updates["flow_period_months"] = int(xbrl_months)
+    return replace(metrics, **updates, value_sources=sources)
 
 
 class OpenAILeverageEvaluator:
@@ -179,6 +237,7 @@ class OpenAILeverageEvaluator:
         filing: FilingRecord,
         filing_text: str,
         instruction_text: str,
+        xbrl_values: dict[str, float | int | None] | None = None,
     ) -> tuple[LeverageMetrics, dict[str, float | None], str, str]:
         prepared_filing = self._prepare_filing_text(filing_text, retry_mode=False)
         extraction_raw = self._extract_metrics_json(
@@ -187,10 +246,10 @@ class OpenAILeverageEvaluator:
             prepared_filing,
             retry_note=None,
         )
-        metrics = self._parse_metrics(extraction_raw)
+        metrics = merge_xbrl_metrics(self._parse_metrics(extraction_raw), xbrl_values)
 
         # Some filings place debt and interest details deep in tables/notes.
-        # Retry with broader windows if most core fields are missing.
+        # Retry with broader windows if most core fields are still missing.
         if self._count_missing_core_metrics(metrics) >= 3:
             retry_excerpt = self._prepare_filing_text(filing_text, retry_mode=True)
             retry_raw = self._extract_metrics_json(
@@ -202,7 +261,7 @@ class OpenAILeverageEvaluator:
                     "Re-check balance sheet, debt footnotes, and income statement sections."
                 ),
             )
-            retry_metrics = self._parse_metrics(retry_raw)
+            retry_metrics = merge_xbrl_metrics(self._parse_metrics(retry_raw), xbrl_values)
             if self._count_missing_core_metrics(retry_metrics) < self._count_missing_core_metrics(metrics):
                 extraction_raw = retry_raw
                 metrics = retry_metrics
@@ -309,7 +368,7 @@ class OpenAILeverageEvaluator:
             f"Filing URL: {filing.primary_document_url}\n\n"
             "Instruction framework:\n"
             f"{instruction_text}\n\n"
-            "Extracted values (from filing extraction):\n"
+            "Extracted values (value_sources marks SEC XBRL as-reported values vs AI extraction):\n"
             f"{json.dumps(_metrics_to_dict(metrics), indent=2)}\n\n"
             "Calculated leverage ratios (Net Debt / EBITDA uses annualized EBITDA):\n"
             f"{json.dumps(calculated, indent=2)}\n\n"
@@ -337,7 +396,10 @@ class OpenAILeverageEvaluator:
         )
 
     def _parse_metrics(self, extraction_raw: str) -> LeverageMetrics:
-        parsed_json = _extract_json_object(extraction_raw)
+        try:
+            parsed_json = extract_json_object(extraction_raw)
+        except ValueError as exc:
+            raise OpenAILeverageError("OpenAI extraction did not return a JSON object.") from exc
 
         try:
             payload = json.loads(parsed_json)
@@ -520,19 +582,6 @@ class OpenAILeverageEvaluator:
         return sum(1 for value in core_values if value is None)
 
 
-def _extract_json_object(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
-
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return stripped[start : end + 1]
-
-    raise OpenAILeverageError("OpenAI extraction did not return a JSON object.")
-
-
 def _to_float(value: object) -> float | None:
     if value is None:
         return None
@@ -671,4 +720,5 @@ def _metrics_to_dict(metrics: LeverageMetrics) -> dict[str, object]:
             "interest_expense": metrics.interest_expense,
         },
         "fixed_cost_notes": metrics.fixed_cost_notes,
+        "value_sources": dict(metrics.value_sources),
     }

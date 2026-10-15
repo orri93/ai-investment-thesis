@@ -2,32 +2,29 @@
 
 This is a short end-to-end demo showing:
 
-1. Initializing private helper scripts
+1. Configuring credentials in `.env`
 2. Generating a thesis from a draft
 3. Running the main thesis evaluator
 4. Viewing the resulting evaluation log entry
 
-## 1) Initialization: Create Private Helper Scripts
+## 1) Initialization: Configure Credentials
 
-Create private/local helper scripts from the example scripts before running the demo.
+Copy the example settings file and fill in your real values. `.env` is git-ignored.
 
 ```bash
 # Windows PowerShell
-Copy-Item generate-example.ps1 generate.ps1
-Copy-Item evaluate-example.ps1 evaluate.ps1
-Copy-Item leverage-evaluate-example.ps1 leverage-evaluate.ps1
+Copy-Item .env.example .env
 
 # Linux/macOS
-cp generate-example.sh generate.sh
-cp evaluate-example.sh evaluate.sh
-cp leverage-evaluate-example.sh leverage-evaluate.sh
-chmod +x generate.sh evaluate.sh leverage-evaluate.sh
+cp .env.example .env
+chmod +x generate-example.sh evaluate-example.sh leverage-evaluate-example.sh
 ```
 
-Then edit the private scripts to set your real credentials:
+Then edit `.env` to set:
 
 - OPENAI_API_KEY
 - SEC_USER_AGENT
+- OPENAI_MODEL (optional)
 
 ## 2) Draft Thesis Input (Generator)
 
@@ -43,15 +40,15 @@ cp thesis-examples/pltr-draft.md thesis/pltr.md
 # - position details (shares, entry, cost basis, portfolio weight)
 # - core thesis and risk/invalidation views
 
-# Generate/refine thesis from draft (overwrites thesis/pltr.md)
+# Generate/refine thesis from draft (overwrites thesis/pltr.md; the draft is kept as thesis/pltr.md.bak)
 python thesis-generator.py thesis/pltr.md
 
-# Alternative using private helper scripts
+# Alternative using the helper scripts
 # Windows PowerShell
-.\generate.ps1 .\thesis\pltr.md
+.\generate-example.ps1 .\thesis\pltr.md
 
 # Linux/macOS
-./generate.sh ./thesis/pltr.md
+./generate-example.sh ./thesis/pltr.md
 ```
 
 ## 3) Thesis File Input (Main Evaluator)
@@ -160,12 +157,12 @@ Palantir is a differentiated data analytics platform company uniquely positioned
 ```bash
 python main.py
 
-# Alternative using private helper scripts
+# Alternative using the helper scripts
 # Windows PowerShell
-.\evaluate.ps1
+.\evaluate-example.ps1
 
 # Linux/macOS
-./evaluate.sh
+./evaluate-example.sh
 ```
 
 ## 5) Resulting Log Entry (Excerpt)
@@ -208,10 +205,10 @@ Or use helper scripts:
 
 ```bash
 # Windows PowerShell
-.\leverage-evaluate.ps1
+.\leverage-evaluate-example.ps1
 
 # Linux/macOS
-./leverage-evaluate.sh
+./leverage-evaluate-example.sh
 ```
 
 ## 7) Leverage Output (Excerpt)

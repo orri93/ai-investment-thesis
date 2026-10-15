@@ -9,10 +9,9 @@ Set-Location $PSScriptRoot
 # Activate the Python virtual environment
 & ./venv/Scripts/Activate.ps1
 
-# Set environment variables
-# Replace 'your_openai_api_key' with your actual OpenAI API key
-$env:OPENAI_API_KEY = "your_openai_api_key"
-$env:OPENAI_MODEL = "gpt-6.1-sol"
+# Configuration
+# Settings (OPENAI_API_KEY, OPENAI_MODEL) are read from .env;
+# copy .env.example to .env and fill in your values.
 
 # Execute the thesis generator script
 # Pass the draft thesis file path as script argument

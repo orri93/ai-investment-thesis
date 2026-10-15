@@ -216,3 +216,6 @@ leverage-evaluate.sh
 
 # Draft backups written by thesis-generator.py
 *.md.bak
+
+# Temporary files from interrupted atomic writes
+*.tmp
