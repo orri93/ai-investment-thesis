@@ -1,4 +1,4 @@
-﻿# SEC-Driven Investment Thesis Revalidation (OpenAI + EDGAR)
+# SEC-Driven Investment Thesis Revalidation (OpenAI + EDGAR)
 
 An Investment Thesis evaluation system that utilizes OpenAI API based on SEC filings and other financial data. The system is designed to analyze and evaluate investment theses for publicly traded companies by leveraging natural language processing and machine learning techniques.
 
