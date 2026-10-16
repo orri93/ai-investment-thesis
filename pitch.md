@@ -14,14 +14,14 @@ Use this everywhere.
 
 ### What makes it different
 
-- **Thesis-first** ï¿½ you supply your thesis + invalidation criteria; the tool checks it against filings
-- **Audit trail** ï¿½ append-only log per ticker; idempotent "processed filing" markers
-- **Form-specific rigor** ï¿½ 10-K vs 10-Q vs 8-K instructions are different
+- **Thesis-first** - you supply your thesis + invalidation criteria; the tool checks it against filings
+- **Audit trail** - append-only log per ticker; idempotent "processed filing" markers
+- **Form-specific rigor** - 10-K vs 10-Q vs 8-K instructions are different
 
 ### Call to action (pick ONE per post)
 
 - "Try the canonical demo and tell me what breaks / what's missing."
-- "If you write theses, I'm looking for 5ï¿½10 design partners."
+- "If you write theses, I'm looking for 5-10 design partners."
 - "Star the repo if you want updates."
 
 ---
@@ -36,7 +36,7 @@ Use this consistent pattern:
 | **Demo** | In the repo, open `demo.md` (Canonical Demo) |
 | **Quick start** | README has setup; `demo.md` shows end-to-end flow |
 
-If you can include a link, include it once at the end. If not, don't apologize ï¿½ just give the repo slug.
+If you can include a link, include it once at the end. If not, don't apologize - just give the repo slug.
 
 **Example phrasing (no links):**
 
@@ -53,15 +53,15 @@ If you can include a link, include it once at the end. If not, don't apologize ï
 ### Best-fit communities (process-oriented investors + builders)
 
 **Reddit**
-- **r/SecurityAnalysis** ï¿½ best fit for thesis + revalidation
-- **r/ValueInvesting** ï¿½ frame as discipline + documentation
-- **r/investing** ï¿½ keep it beginner-friendly, avoid "alpha claims"
-- **r/algotrading** ï¿½ frame as pipeline + monitoring, not trading signals
-- **r/stocks** ï¿½ lighter version
+- **r/SecurityAnalysis** - best fit for thesis + revalidation
+- **r/ValueInvesting** - frame as discipline + documentation
+- **r/investing** - keep it beginner-friendly, avoid "alpha claims"
+- **r/algotrading** - frame as pipeline + monitoring, not trading signals
+- **r/stocks** - lighter version
 
 **Hacker / builder channels**
-- Hacker News ("Show HN: ï¿½") ï¿½ if you can tell a clear story + include demo
-- Indie Hackers ï¿½ building-in-public angle
+- Hacker News ("Show HN: ...") - if you can tell a clear story + include demo
+- Indie Hackers - building-in-public angle
 - GitHub / open-source circles: Python, LLM tooling, data pipelines
 
 **X (Twitter) / LinkedIn**
@@ -76,7 +76,7 @@ If you can include a link, include it once at the end. If not, don't apologize ï
 
 ### A) r/SecurityAnalysis
 
-**Title:** SEC-driven investment thesis revalidation (markdown thesis ? append-only decision log)
+**Title:** SEC-driven investment thesis revalidation (markdown thesis -> append-only decision log)
 
 **Body:**
 
@@ -87,7 +87,7 @@ Workflow:
 1. You write your thesis in markdown (including risks + explicit invalidation criteria).
 2. The tool scans new SEC filings for your tickers (10-K / 10-Q / 8-K).
 3. It appends a short, evidence-based "decision log" entry (Hold/Trim/Exit/Watch) to `log/<ticker>.md`, including the filing accession + SEC URL.
-4. It's idempotent ï¿½ stores a processed marker so the same filing won't be re-run.
+4. It's idempotent - stores a processed marker so the same filing won't be re-run.
 
 If you want to see the end-to-end flow, there's a canonical demo in `demo.md`.
 
@@ -105,7 +105,7 @@ What I'm looking for:
 
 **Body:**
 
-I tend to write an investment thesis when I buy ï¿½ but I'm not great at revisiting it consistently.
+I tend to write an investment thesis when I buy - but I'm not great at revisiting it consistently.
 
 So I built a small open-source tool:
 
@@ -117,7 +117,7 @@ If you want the step-by-step demo, open `demo.md` in the repo.
 
 Find it by searching GitHub for: `orri93/ai-investment-thesis`
 
-I'm looking for a few people to try it on 1ï¿½2 tickers and tell me:
+I'm looking for a few people to try it on 1-2 tickers and tell me:
 - What parts feel useful vs noise
 - What would increase trust in the output
 
@@ -133,7 +133,7 @@ Canonical demo is in `demo.md`.
 
 Find it on GitHub: search `orri93/ai-investment-thesis`.
 
-Looking for 5ï¿½10 design partners:
+Looking for 5-10 design partners:
 - You already write theses/memos
 - You'll try it on your watchlist
 - You tell me what would make it trustworthy + useful (citations, exhibit parsing, etc.)
@@ -158,7 +158,7 @@ Looking for 5ï¿½10 design partners:
 > Find it by searching GitHub for: `orri93/ai-investment-thesis`.
 
 **Tweet 6 (ask)**
-> Looking for 5ï¿½10 investors who already write theses to test it on 1ï¿½2 tickers and tell me what would make it more trustworthy.
+> Looking for 5-10 investors who already write theses to test it on 1-2 tickers and tell me what would make it more trustworthy.
 
 ---
 
@@ -198,7 +198,7 @@ If you think links might work but want to be safe, do both:
 ## 6. Quick Wins Before Posting
 
 - [ ] Rename README headline to: **"SEC-Driven Investment Thesis Revalidation (OpenAI + EDGAR)"**
-- [ ] Add a "30-second demo" excerpt at top of README (5ï¿½15 lines showing a log entry shape)
+- [ ] Add a "30-second demo" excerpt at top of README (5-15 lines showing a log entry shape)
 - [ ] Add a "Who this is for / not for" section (reduces backlash in investor communities)
 - [ ] Add a single CTA: "Try `demo.md` and open an issue with feedback"
 

@@ -7,7 +7,7 @@ An Investment Thesis evaluation system that utilizes OpenAI API based on SEC fil
 **This tool is for you if:**
 - You write investment theses or memos before buying a stock
 - You want a structured, repeatable way to revisit your thesis when new filings drop
-- You value an audit trail â€” knowing *why* you held, trimmed, or exited a position
+- You value an audit trail - knowing *why* you held, trimmed, or exited a position
 - You are comfortable setting up a Python environment and an OpenAI API key
 
 **This tool is not for you if:**
