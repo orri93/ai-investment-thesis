@@ -20,7 +20,12 @@ from utils import (
     ticker_from_thesis_path,
     write_text_atomic,
 )
-from xbrl_facts import facts_for_filing, non_null_values, valuation_values
+from xbrl_facts import (
+    facts_for_filing,
+    non_null_values,
+    trailing_twelve_months,
+    valuation_values,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -45,6 +50,19 @@ MARKET_DATA_NOTE = (
     "capitalization, risk-free rate, beta, equity risk premium); state each such input with "
     "its source and date. Do not use web search for company financials."
 )
+MARKET_DATA_SYSTEM_PROMPT = (
+    "You retrieve current market inputs for valuation work using web search. "
+    "Report only values you found, each with its source and date. Return strict JSON only."
+)
+MARKET_DATA_SCHEMA = """{
+  "share_price_usd": "number|null",
+  "price_timestamp": "string|null",
+  "market_cap_usd_millions": "number|null",
+  "risk_free_rate_pct": "number|null",
+  "beta": "number|null",
+  "equity_risk_premium_pct": "number|null",
+  "sources": [{"input": "string", "source": "string", "date": "string"}]
+}"""
 
 
 class ValuationError(Exception):
@@ -199,6 +217,14 @@ def main() -> int:
             except SecEdgarError as exc:
                 print(f"  - XBRL data unavailable, using AI extraction only ({exc})")
 
+            ttm = _latest_ttm(company_facts, filings)
+            if ttm:
+                print(f"  - Trailing twelve months computed through {ttm['period_end']}")
+            else:
+                print("  - Trailing twelve months unavailable from XBRL")
+
+            market_data = _step_market_data(openai_client, model, ticker)
+
             # Step 2: Extract financial data (Step 1 in requirements)
             print("  - Step 1: Extracting financial data...")
             extractions = _step_extract_financials(
@@ -213,6 +239,7 @@ def main() -> int:
             print("  - Step 2: Constructing valuation models...")
             valuation_models = _step_valuation_models(
                 openai_client, model, ticker, extractions, instructions["models"],
+                ttm=ttm, market_data=market_data,
             )
 
             # Step 4: Qualitative drivers (Step 3 in requirements)
@@ -229,11 +256,13 @@ def main() -> int:
                 openai_client, model, ticker, filing_texts, extractions,
                 valuation_models, qualitative, instructions["impact"],
                 max_chars=args.max_filing_chars,
+                ttm=ttm, market_data=market_data,
             )
 
             # Assemble and write output
             output = _assemble_valuation_output(
-                ticker, filings, extractions, valuation_models, qualitative, impact
+                ticker, filings, extractions, valuation_models, qualitative, impact,
+                market_data=market_data,
             )
             write_text_atomic(valuation_path, output)
             print(f"  - Valuation written to: {valuation_path.name}")
@@ -451,12 +480,74 @@ def apply_xbrl_overrides(extraction: dict[str, Any], xbrl_values: dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
+def _latest_ttm(
+    company_facts: dict[str, Any] | None,
+    filings: dict[str, list[FilingRecord]],
+) -> dict[str, Any]:
+    """Trailing-twelve-month XBRL flows through the most recent 10-K or 10-Q."""
+    if not company_facts:
+        return {}
+    candidates = [f for form in ("10-K", "10-Q") for f in filings.get(form, []) if f.report_date]
+    if not candidates:
+        return {}
+    latest = max(candidates, key=lambda f: f.filing_date)
+    return trailing_twelve_months(company_facts, latest.report_date)
+
+
+def _step_market_data(client: OpenAI, model: str, ticker: str) -> dict[str, Any] | None:
+    """Retrieve price and WACC inputs once so every later step uses the same figures."""
+    user_prompt = (
+        f"Ticker: {ticker}\n"
+        f"Today: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n\n"
+        "Use web search to find the current share price, market capitalization, the 10-year "
+        "Treasury yield (risk-free rate), the equity beta, and the equity risk premium. "
+        "Percentages are plain numbers (4.2 for 4.2%). Set a value to null if not found.\n\n"
+        f"Return ONLY JSON with this schema:\n{MARKET_DATA_SCHEMA}"
+    )
+    try:
+        response = _call_openai(
+            client, model, MARKET_DATA_SYSTEM_PROMPT, user_prompt, web_search=True
+        )
+        data = json.loads(extract_json_object(response))
+        if not isinstance(data, dict) or not isinstance(data.get("share_price_usd"), (int, float)):
+            raise ValueError("No share price in market data.")
+    except (ValueError, ValuationError) as exc:
+        print(f"  - Warning: market data unavailable, valuation steps will search for it ({exc})")
+        return None
+    print(f"  - Market price: ${data['share_price_usd']:.2f}")
+    return data
+
+
+def _market_section(market_data: dict[str, Any] | None) -> str:
+    if not market_data:
+        return MARKET_DATA_NOTE
+    return (
+        "Market inputs retrieved for this run (use exactly these for price, market cap and WACC; "
+        "cite the sources listed; do not search the web again):\n"
+        f"{json.dumps(market_data, indent=2)}"
+    )
+
+
+def _ttm_section(ttm: dict[str, Any]) -> str:
+    if not ttm:
+        return ""
+    return (
+        "Trailing twelve months computed in code from XBRL as latest fiscal year + current "
+        "year-to-date - prior-year year-to-date (USD and shares in millions). Use these as the "
+        "DCF base year instead of annualizing a partial year:\n"
+        f"{json.dumps(ttm, indent=2)}\n\n"
+    )
+
+
 def _step_valuation_models(
     client: OpenAI,
     model: str,
     ticker: str,
     extractions: list[dict[str, Any]],
     instruction_text: str,
+    *,
+    ttm: dict[str, Any] | None = None,
+    market_data: dict[str, Any] | None = None,
 ) -> str:
     """Build DCF, normalized earnings, unit economics, and scenario analyses."""
     system_prompt = (
@@ -473,13 +564,14 @@ def _step_valuation_models(
     user_prompt = (
         f"Ticker: {ticker}\n\n"
         f"Valuation model instructions:\n{instruction_text}\n\n"
+        f"{_ttm_section(ttm or {})}"
         f"Structured financial extractions from SEC filings:\n{extractions_summary}\n\n"
         "Build the valuation models as specified in the instructions. "
         "Use the multi-period data to establish trends and make projections.\n"
-        f"{MARKET_DATA_NOTE}"
+        f"{_market_section(market_data)}"
     )
 
-    return _call_openai(client, model, system_prompt, user_prompt, web_search=True)
+    return _call_openai(client, model, system_prompt, user_prompt, web_search=market_data is None)
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +661,8 @@ def _step_valuation_impact(
     instruction_text: str,
     *,
     max_chars: int,
+    ttm: dict[str, Any] | None = None,
+    market_data: dict[str, Any] | None = None,
 ) -> str:
     """Connect filing data to valuation impact analysis."""
     system_prompt = (
@@ -583,15 +677,16 @@ def _step_valuation_impact(
     user_prompt = (
         f"Ticker: {ticker}\n\n"
         f"Impact analysis instructions:\n{instruction_text}\n\n"
+        f"{_ttm_section(ttm or {})}"
         f"Quantitative valuation models:\n{valuation_models[:30000]}\n\n"
         f"Qualitative assessment:\n{qualitative[:20000]}\n\n"
         f"Structured financial extractions:\n{extractions_summary}\n\n"
         "Connect the filings to valuation impact as specified in the instructions. "
         "Reason about margin compression, debt changes, dilution, and other material factors.\n"
-        f"{MARKET_DATA_NOTE}"
+        f"{_market_section(market_data)}"
     )
 
-    return _call_openai(client, model, system_prompt, user_prompt, web_search=True)
+    return _call_openai(client, model, system_prompt, user_prompt, web_search=market_data is None)
 
 
 # ---------------------------------------------------------------------------
@@ -630,13 +725,22 @@ def _assemble_valuation_output(
     valuation_models: str,
     qualitative: str,
     impact: str,
+    *,
+    market_data: dict[str, Any] | None = None,
 ) -> str:
     """Assemble the final valuation output markdown document."""
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    market_line = ""
+    if market_data:
+        market_line = (
+            f"**Market price at generation:** ${market_data['share_price_usd']:.2f}"
+            f" ({market_data.get('price_timestamp') or 'time not reported'})\n\n"
+        )
 
     header = (
         f"# {ticker} — Valuation Analysis\n\n"
         f"Generated: {generated_at}\n\n"
+        f"{market_line}"
         f"**Data Sources:**\n"
         f"- 10-K filings: {len(filings['10-K'])} "
         f"({_date_range(filings['10-K'])})\n"

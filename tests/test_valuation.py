@@ -28,3 +28,24 @@ def test_xbrl_valuation_values_for_filing(valuation_module):
     values = valuation_module._xbrl_valuation_values(COMPANY_FACTS, info)
     assert values["debt_liquidity"]["total_debt"] == 132_549.0
     assert valuation_module._xbrl_valuation_values(None, info) == {}
+
+
+def test_latest_ttm_uses_most_recent_filing(valuation_module):
+    from test_xbrl_facts import _ttm_company_facts
+    from conftest import make_filing
+
+    filings = {
+        "10-K": [make_filing("10-K", "2026-02-06", "0001018724-26-000014", "2025-12-31")],
+        "10-Q": [make_filing("10-Q", "2026-07-31", ACC, "2026-06-30")],
+        "8-K": [],
+    }
+    ttm = valuation_module._latest_ttm(_ttm_company_facts(), filings)
+    assert ttm["period_end"] == "2026-06-30"
+    assert ttm["free_cash_flow"] == -30_000.0
+    assert valuation_module._latest_ttm(None, filings) == {}
+
+
+def test_market_section_uses_provided_inputs_or_falls_back_to_search(valuation_module):
+    data = {"share_price_usd": 254.76, "sources": []}
+    assert "254.76" in valuation_module._market_section(data)
+    assert valuation_module._market_section(None) == valuation_module.MARKET_DATA_NOTE

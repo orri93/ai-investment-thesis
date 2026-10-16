@@ -1,4 +1,4 @@
-# SEC-Driven Investment Thesis Revalidation (OpenAI + EDGAR)
+﻿# SEC-Driven Investment Thesis Revalidation (OpenAI + EDGAR)
 
 An Investment Thesis evaluation system that utilizes OpenAI API based on SEC filings and other financial data. The system is designed to analyze and evaluate investment theses for publicly traded companies by leveraging natural language processing and machine learning techniques.
 
@@ -7,7 +7,7 @@ An Investment Thesis evaluation system that utilizes OpenAI API based on SEC fil
 **This tool is for you if:**
 - You write investment theses or memos before buying a stock
 - You want a structured, repeatable way to revisit your thesis when new filings drop
-- You value an audit trail — knowing *why* you held, trimmed, or exited a position
+- You value an audit trail â€” knowing *why* you held, trimmed, or exited a position
 - You are comfortable setting up a Python environment and an OpenAI API key
 
 **This tool is not for you if:**
@@ -332,13 +332,14 @@ Run `.\leverage-evaluate-example.ps1` (Windows) or `./leverage-evaluate-example.
 `valuation-models.py` builds a valuation document per ticker in [valuation](valuation) from several years of filings:
 
 1. Extracts financial data from each `10-K`/`10-Q`. As-reported SEC XBRL values (revenue, operating income, cash flows, debt, cash, equity, and more) are authoritative; the AI extraction from the filing text fills the remaining fields.
-2. Builds valuation models (DCF, normalized earnings, scenarios). Web search is used only for market inputs such as share price, risk-free rate, beta, and equity risk premium, each cited with source and date.
-3. Assesses qualitative value drivers from the filings.
-4. Connects recent filings to valuation impact.
+2. Computes trailing-twelve-month cash flows and income from XBRL (latest fiscal year + current year-to-date - prior-year year-to-date) and retrieves market inputs once by web search (share price, risk-free rate, beta, equity risk premium, each cited with source and date). Net debt deducts marketable securities.
+3. Builds valuation models (DCF on a normalized terminal year, normalized earnings, scenarios) and reconciles them with the market price through a reverse DCF.
+4. Assesses qualitative value drivers from the filings.
+5. Connects recent filings to valuation impact.
 
 ```bash
 python valuation-models.py
-python valuation-models.py --ticker amzn --10k-years 3 --10q-quarters 4 --8k-months 12
+python valuation-models.py --ticker amzn --10k-years 3 --10q-quarters 4 --8k-months 12 --openai-model gpt-6.1-sol
 ```
 
 ## Running Tests

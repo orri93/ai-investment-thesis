@@ -94,3 +94,83 @@ def test_valuation_values_are_in_millions_and_drop_missing():
     assert values["debt_liquidity"]["total_debt"] == 132_549.0
     assert values["capital_allocation"]["shares_outstanding_diluted"] == 10_903.0
     assert "gross_profit" not in values["revenue_margins"]
+
+
+def _ttm_company_facts():
+    def flow(concept, rows):
+        return {concept: usd(*[fact(v, accn=a, end=e, start=s) for s, e, a, v in rows])}
+
+    return {
+        "facts": {
+            "us-gaap": {
+                **flow(
+                    "NetCashProvidedByUsedInOperatingActivities",
+                    [
+                        ("2025-01-01", "2025-12-31", OTHER, 140_000_000_000),
+                        ("2026-01-01", END, ACC, 70_000_000_000),
+                        ("2025-01-01", "2025-06-30", ACC, 60_000_000_000),
+                        ("2026-04-01", END, ACC, 40_000_000_000),
+                    ],
+                ),
+                **flow(
+                    "PaymentsToAcquirePropertyPlantAndEquipment",
+                    [
+                        ("2025-01-01", "2025-12-31", OTHER, 130_000_000_000),
+                        ("2026-01-01", END, ACC, 100_000_000_000),
+                        ("2025-01-01", "2025-06-30", ACC, 50_000_000_000),
+                    ],
+                ),
+                **flow(
+                    "InterestExpenseNonoperating",
+                    [
+                        ("2025-01-01", "2025-12-31", OTHER, -4_000_000_000),
+                        ("2026-01-01", END, ACC, -2_000_000_000),
+                        ("2025-01-01", "2025-06-30", ACC, -1_500_000_000),
+                    ],
+                ),
+            }
+        }
+    }
+
+
+def test_trailing_twelve_months_uses_prior_year_comparatives():
+    ttm = x.trailing_twelve_months(_ttm_company_facts(), END)
+    assert ttm["period_end"] == END
+    assert ttm["operating_cash_flow"] == 150_000.0
+    assert ttm["capital_expenditures"] == 180_000.0
+    assert ttm["free_cash_flow"] == -30_000.0
+    assert ttm["interest_expense"] == 4_500.0
+    assert "revenue" not in ttm
+
+
+def test_trailing_twelve_months_needs_prior_year_period():
+    company_facts = _ttm_company_facts()
+    gaap = company_facts["facts"]["us-gaap"]
+    gaap["NetCashProvidedByUsedInOperatingActivities"]["units"]["USD"] = [
+        f for f in gaap["NetCashProvidedByUsedInOperatingActivities"]["units"]["USD"] if f["start"] != "2025-01-01" or f["end"] != "2025-06-30"
+    ]
+    assert "operating_cash_flow" not in x.trailing_twelve_months(company_facts, END)
+
+
+def test_trailing_twelve_months_for_annual_period_is_the_fiscal_year():
+    ttm = x.trailing_twelve_months(_ttm_company_facts(), "2025-12-31")
+    assert ttm["operating_cash_flow"] == 140_000.0
+
+
+def test_trailing_twelve_months_without_period_end_is_empty():
+    assert x.trailing_twelve_months(_ttm_company_facts(), None) == {}
+
+
+def test_valuation_net_debt_deducts_marketable_securities():
+    facts = x.FilingFacts(
+        accession=ACC,
+        period_end=END,
+        instants={
+            "LongTermDebtNoncurrent": 100e6,
+            "CashAndCashEquivalentsAtCarryingValue": 30e6,
+            "MarketableSecuritiesCurrent": 20e6,
+        },
+    )
+    debt = x.valuation_values(facts, "10-Q")["debt_liquidity"]
+    assert debt["marketable_securities"] == 20.0
+    assert debt["net_debt"] == 50.0

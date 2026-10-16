@@ -70,6 +70,7 @@ Return markdown with the following structure:
 ### Valuation Range Summary
 | Scenario | Per-Share Value | Key Driver |
 |----------|----------------|------------|
+| Market | $XX (current price) | [what the price implies] |
 | Downside | $XX | [primary risk] |
 | Base     | $XX | [core assumption] |
 | Upside   | $XX | [key catalyst] |
@@ -82,3 +83,4 @@ Return markdown with the following structure:
 4. Acknowledge compounding effects (e.g., margin compression + dilution).
 5. Be explicit about what time horizon your conclusions apply to.
 6. Produce structured tables for easy consumption alongside narrative analysis.
+7. Always include the current market price as the first row of the Valuation Range Summary and state how far each scenario sits from it.

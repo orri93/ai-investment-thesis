@@ -76,6 +76,7 @@ Return ONLY valid JSON with this schema:
     "short_term_debt": "number|null",
     "long_term_debt": "number|null",
     "cash_and_equivalents": "number|null",
+    "marketable_securities": "number|null",
     "net_debt": "number|null",
     "credit_facility_available": "number|null",
     "interest_expense": "number|null",
@@ -114,3 +115,4 @@ Return ONLY valid JSON with this schema:
 5. For 10-K filings, extract the full-year values. For 10-Q, extract the quarterly values.
 6. `citations` should reference specific statements or sections (e.g., "Consolidated Statements of Operations", "Note 8 - Debt").
 7. Do not include markdown, code fences, or commentary outside the JSON.
+8. `net_debt` = total debt - cash and equivalents - marketable securities (liquid current securities).
