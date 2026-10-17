@@ -206,14 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Local private scripts
-evaluate.ps1
-evaluate.sh
-generate.ps1
-generate.sh
-leverage-evaluate.ps1
-leverage-evaluate.sh
-
 # Draft backups written by thesis-generator.py
 *.md.bak
 

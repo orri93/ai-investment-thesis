@@ -83,16 +83,14 @@ This project reads company filings directly from SEC EDGAR. The SEC requires aut
 
 Use a real email address or other valid contact detail in the value. The SEC client in [sec_filings.py](sec_filings.py) will fail at startup if this variable is missing. The client also keeps requests below the SEC limit of 10 per second and retries temporary failures (HTTP 429/5xx and network errors) with backoff.
 
-## Quick Start: Using the Helper Scripts
+## Quick Start: Launch Scripts
 
-The helper scripts activate the virtual environment and run the application. They contain no credentials (those live in `.env`), so you can run them directly:
+The launch scripts activate the virtual environment and run the application. They contain no credentials (those live in `.env`), so you can run them directly:
 
-- **Windows:** `.\evaluate-example.ps1`, `.\leverage-evaluate-example.ps1`, `.\generate-example.ps1 <draft-file>`
-- **Linux/macOS:** `./evaluate-example.sh`, `./leverage-evaluate-example.sh`, `./generate-example.sh <draft-file>` (run `chmod +x *.sh` once)
+- **Windows:** `.\evaluate.ps1`, `.\leverage-evaluate.ps1`, `.\generate.ps1 <draft-file>`
+- **Linux/macOS:** `./evaluate.sh`, `./leverage-evaluate.sh`, `./generate.sh <draft-file>` (run `chmod +x *.sh` once)
 
-Extra arguments are passed through, for example `.\evaluate-example.ps1 --verbose`.
-
-Private copies named `evaluate.ps1`, `generate.sh`, and so on are still git-ignored if you prefer to keep customized versions.
+Extra arguments are passed through, for example `.\evaluate.ps1 --verbose`.
 
 ## How The System Works
 
@@ -241,14 +239,14 @@ The `thesis-generator.py` script helps you complete and improve draft theses usi
 python thesis-generator.py thesis/my-company-draft.md
 ```
 
-You can also run the helper scripts (credentials come from `.env`):
+You can also run the launch scripts (credentials come from `.env`):
 
 ```bash
 # Windows PowerShell
-.\generate-example.ps1 .\thesis\my-company-draft.md
+.\generate.ps1 .\thesis\my-company-draft.md
 
 # Linux / macOS
-./generate-example.sh ./thesis/my-company-draft.md
+./generate.sh ./thesis/my-company-draft.md
 ```
 
 The script will:
@@ -314,9 +312,9 @@ python leverage-evaluator.py
 python leverage-evaluator.py --filings-limit 25 --openai-model gpt-4.1-mini
 ```
 
-### Use Leverage Helper Scripts
+### Use Leverage Launch Scripts
 
-Run `.\leverage-evaluate-example.ps1` (Windows) or `./leverage-evaluate-example.sh` (Linux/macOS). Credentials come from `.env`.
+Run `.\leverage-evaluate.ps1` (Windows) or `./leverage-evaluate.sh` (Linux/macOS). Credentials come from `.env`.
 
 ### What It Produces
 

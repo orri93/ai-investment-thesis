@@ -17,7 +17,7 @@ Copy-Item .env.example .env
 
 # Linux/macOS
 cp .env.example .env
-chmod +x generate-example.sh evaluate-example.sh leverage-evaluate-example.sh
+chmod +x generate.sh evaluate.sh leverage-evaluate.sh
 ```
 
 Then edit `.env` to set:
@@ -43,12 +43,12 @@ cp thesis-examples/pltr-draft.md thesis/pltr.md
 # Generate/refine thesis from draft (overwrites thesis/pltr.md; the draft is kept as thesis/pltr.md.bak)
 python thesis-generator.py thesis/pltr.md
 
-# Alternative using the helper scripts
+# Alternative using the launch scripts
 # Windows PowerShell
-.\generate-example.ps1 .\thesis\pltr.md
+.\generate.ps1 .\thesis\pltr.md
 
 # Linux/macOS
-./generate-example.sh ./thesis/pltr.md
+./generate.sh ./thesis/pltr.md
 ```
 
 ## 3) Thesis File Input (Main Evaluator)
@@ -157,12 +157,12 @@ Palantir is a differentiated data analytics platform company uniquely positioned
 ```bash
 python main.py
 
-# Alternative using the helper scripts
+# Alternative using the launch scripts
 # Windows PowerShell
-.\evaluate-example.ps1
+.\evaluate.ps1
 
 # Linux/macOS
-./evaluate-example.sh
+./evaluate.sh
 ```
 
 ## 5) Resulting Log Entry (Excerpt)
@@ -201,14 +201,14 @@ Run directly:
 python leverage-evaluator.py
 ```
 
-Or use helper scripts:
+Or use launch scripts:
 
 ```bash
 # Windows PowerShell
-.\leverage-evaluate-example.ps1
+.\leverage-evaluate.ps1
 
 # Linux/macOS
-./leverage-evaluate-example.sh
+./leverage-evaluate.sh
 ```
 
 ## 7) Leverage Output (Excerpt)
